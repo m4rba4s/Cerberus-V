@@ -1,0 +1,150 @@
+# SPDX-License-Identifier: Apache-2.0
+# Docker Compose for VPP eBPF Firewall GUI Stack
+
+version: '3.8'
+
+services:
+  # Backend API
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: vppebpf-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - AUTH_ENABLED=true
+    volumes:
+      - /opt/vppebpf:/opt/vppebpf:ro
+      - /sys/fs/bpf:/sys/fs/bpf:ro
+      - ./logs:/app/logs
+    privileged: true  # Required for BPF operations
+    network_mode: host  # Required for network interface access
+    cap_add:
+      - SYS_ADMIN
+      - NET_ADMIN
+      - CAP_BPF
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`api.vppebpf.local`)"
+      - "traefik.http.services.backend.loadbalancer.server.port=8080"
+
+  # Frontend Dashboard
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    container_name: vppebpf-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8080
+      - REACT_APP_WS_URL=ws://localhost:8080/ws
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`vppebpf.local`)"
+      - "traefik.http.services.frontend.loadbalancer.server.port=80"
+
+  # Redis (for future session management)
+  redis:
+    image: redis:7-alpine
+    container_name: vppebpf-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Reverse Proxy (optional)
+  traefik:
+    image: traefik:v2.10
+    container_name: vppebpf-traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8081:8080"  # Traefik dashboard
+    command:
+      - --api.dashboard=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik:/etc/traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`traefik.vppebpf.local`)"
+      - "traefik.http.routers.traefik.service=api@internal"
+
+  # Prometheus (monitoring)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: vppebpf-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+
+  # Grafana (visualization)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: vppebpf-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+
+volumes:
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  default:
+    name: vppebpf-network
+    driver: bridge 

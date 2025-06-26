@@ -1,0 +1,297 @@
+# VPP + eBPF Firewall .gitignore
+
+# Build artifacts
+*.o
+*.so
+*.a
+*.d
+*.dylib
+*.la
+*.lai
+*.Plo
+*.Po
+.deps/
+.libs/
+
+# eBPF specific
+*.ll
+*.bc
+*.skel.h
+*.bpf.o
+vmlinux.h
+
+# Userspace binaries
+userspace/af_xdp_loader
+ebpf/xdp_filter
+
+# Logs and temporary files
+*.log
+logs/
+.tmp/
+/tmp/vppebpf-*.log
+/var/log/vppebpf/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+.env/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+gui/backend/venv/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.cproject
+.settings/
+.vimrc.local
+.exrc
+.tags
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Documentation
+_build/
+.doctrees/
+docs/_build/
+docs/html/
+docs/latex/
+
+# Backup files
+*.bak
+*.backup
+*.orig
+*.rej
+*~
+
+# Core dumps
+core
+core.*
+*.core
+
+# System files
+*.pid
+*.sock
+/sys/fs/bpf/test_*
+
+# Configuration overrides
+config.local
+*.local.conf
+.env.local
+.env.production.local
+.env.development.local
+
+# Node.js / Frontend specific
+node_modules/
+.npm/
+.yarn/
+.yarn-integrity
+.pnp/
+.pnp.js
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.eslintcache
+.stylelintcache
+
+# Frontend build artifacts
+gui/frontend/dist/
+gui/frontend/build/
+gui/frontend/.vite/
+gui/frontend/.parcel-cache/
+
+# Package managers
+package-lock.json
+yarn.lock
+.pnpm-debug.log*
+
+# Archives
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tbz2
+*.zip
+*.rar
+*.7z
+*.dmg
+*.pkg
+*.deb
+*.rpm
+
+# Sensitive information
+secrets/
+*.key
+*.pem
+*.crt
+*.cert
+*.p12
+*.p8
+.ssh/
+.gnupg/
+
+# Performance data
+perf.data*
+*.prof
+*.trace
+.benchmarks/
+flamegraph.svg
+
+# Container artifacts
+Dockerfile.local
+docker-compose.override.yml
+.docker/
+
+# VPP specific
+*.api.json
+vpp.log
+vpp_main
+vpp_restart_count
+/etc/vpp/startup.conf.bak
+
+# Go specific
+*.test
+*.prof
+vendor/
+go.work
+go.work.sum
+
+# Rust specific (if used)
+target/
+Cargo.lock
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache directories
+.cache/
+.sass-cache/
+.npm/
+.node_repl_history
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# nyc test coverage
+.nyc_output/
+
+# Bower dependency directory
+bower_components/
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# dotenv environment variables file
+.env
+.env.test
+.env.production
+
+# Microbundle cache
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
+
+# Optional eslint cache
+.eslintcache
+
+# Output of 'npm audit'
+audit-results.json
+
+# Temporary folders
+tmp/
+temp/
+.temp/
+
+# Kubernetes
+*.yaml.bak
+*.yml.bak
+
+# Helm
+charts/*.tgz
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Local development scripts
+run-local.sh
+debug.sh
+*.local.sh
+
+# Editor swap files
+*.swp
+*.swo
+.viminfo 
