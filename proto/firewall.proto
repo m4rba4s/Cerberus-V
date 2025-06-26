@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: Apache-2.0
+// Author: funcybot@gmail.com  Date: 2025-06-26
+// Cerberus-V gRPC API Schema
+
+syntax = "proto3";
+
+package cerberus.v1;
+
+option go_package = "github.com/m4rba4s/Cerberus-V/proto";
+
+// Firewall Control Service
+service FirewallControl {
+  // Rule management
+  rpc AddRule(AddRuleRequest) returns (RuleResponse);
+  rpc DeleteRule(DeleteRuleRequest) returns (StatusResponse);
+  rpc UpdateRule(UpdateRuleRequest) returns (RuleResponse);
+  rpc GetRules(Empty) returns (RulesResponse);
+  rpc GetRule(GetRuleRequest) returns (RuleResponse);
+  
+  // Statistics and monitoring
+  rpc GetStats(Empty) returns (Statistics);
+  rpc GetInterfaceStats(GetInterfaceStatsRequest) returns (InterfaceStatsResponse);
+  rpc StreamEvents(Empty) returns (stream Event);
+  
+  // System management
+  rpc GetSystemInfo(Empty) returns (SystemInfoResponse);
+  rpc RestartDataPlane(Empty) returns (StatusResponse);
+  rpc BackupConfig(Empty) returns (BackupResponse);
+  rpc RestoreConfig(RestoreRequest) returns (StatusResponse);
+}
+
+// Common types
+message Empty {}
+
+message Rule {
+  string id = 1;
+  string action = 2;          // "allow", "drop", "redirect"
+  string src_ip = 3;          // CIDR notation, e.g., "192.168.1.0/24"
+  string dst_ip = 4;          // CIDR notation
+  int32 src_port = 5;         // 0 = any port
+  int32 dst_port = 6;         // 0 = any port
+  string protocol = 7;        // "tcp", "udp", "icmp", "any"
+  string direction = 8;       // "inbound", "outbound", "both"
+  int32 priority = 9;         // Lower number = higher priority
+  bool enabled = 10;
+  string description = 11;
+  int64 created_at = 12;      // Unix timestamp
+  int64 updated_at = 13;      // Unix timestamp
+  
+  // Advanced fields
+  string geoip_country = 14;  // ISO country codes, e.g., "US,CN,RU"
+  int32 rate_limit = 15;      // Packets per second (0 = no limit)
+  string log_level = 16;      // "none", "info", "debug"
+  bool stateful = 17;         // Enable connection tracking
+}
+
+message Event {
+  string id = 1;
+  string type = 2;            // "RULE_MATCH", "PACKET_DROP", "CONNECTION_NEW", etc.
+  int64 timestamp = 3;        // Unix timestamp
+  string source = 4;          // Source IP
+  string target = 5;          // Destination IP
+  string protocol = 6;        // Protocol
+  int32 port = 7;             // Port number
+  string message = 8;         // Human-readable message
+  string severity = 9;        // "low", "medium", "high", "critical"
+  string rule_id = 10;        // Matching rule ID (if applicable)
+  int64 bytes = 11;           // Packet/flow bytes
+  string interface = 12;      // Network interface
+  
+  // Additional context
+  map<string, string> metadata = 13;
+}
+
+message Statistics {
+  uint64 total_packets = 1;
+  uint64 total_bytes = 2;
+  uint64 dropped_packets = 3;
+  uint64 allowed_packets = 4;
+  uint64 redirected_packets = 5;
+  int32 active_rules = 6;
+  int32 active_connections = 7;
+  int64 uptime = 8;           // Seconds since start
+  
+  // Performance metrics
+  double cpu_usage = 9;       // Percentage
+  uint64 memory_usage = 10;   // Bytes
+  double throughput_mbps = 11; // Megabits per second
+  double latency_us = 12;     // Microseconds average
+  
+  // Per-interface breakdown
+  repeated InterfaceStats interfaces = 13;
+}
+
+message InterfaceStats {
+  string name = 1;            // Interface name, e.g., "eth0"
+  string type = 2;            // "ethernet", "wireless", "virtual"
+  bool enabled = 3;
+  uint64 rx_packets = 4;
+  uint64 tx_packets = 5;
+  uint64 rx_bytes = 6;
+  uint64 tx_bytes = 7;
+  uint64 rx_dropped = 8;
+  uint64 tx_dropped = 9;
+  uint64 rx_errors = 10;
+  uint64 tx_errors = 11;
+  double utilization = 12;    // Percentage
+  string status = 13;         // "up", "down", "unknown"
+}
+
+message SystemInfo {
+  string version = 1;         // Cerberus-V version
+  string vpp_version = 2;     // VPP version
+  string kernel_version = 3;  // Linux kernel version
+  string platform = 4;       // Hardware platform
+  int32 cpu_cores = 5;
+  uint64 total_memory = 6;    // Total system memory in bytes
+  uint64 hugepages = 7;       // Available hugepages
+  repeated string features = 8; // Enabled features
+  int64 started_at = 9;       // Unix timestamp when started
+  string config_file = 10;    // Path to configuration file
+}
+
+// Request/Response messages
+
+message AddRuleRequest {
+  Rule rule = 1;
+}
+
+message UpdateRuleRequest {
+  string rule_id = 1;
+  Rule rule = 2;
+}
+
+message DeleteRuleRequest {
+  string rule_id = 1;
+}
+
+message GetRuleRequest {
+  string rule_id = 1;
+}
+
+message GetInterfaceStatsRequest {
+  string interface_name = 1; // Empty = all interfaces
+}
+
+message RestoreRequest {
+  bytes config_data = 1;     // Configuration backup data
+  bool force = 2;            // Force restore even if validation fails
+}
+
+message RuleResponse {
+  bool success = 1;
+  string message = 2;
+  string rule_id = 3;
+  Rule rule = 4;            // Returned rule (for get/update operations)
+}
+
+message RulesResponse {
+  repeated Rule rules = 1;
+  int32 count = 2;
+  int32 total_pages = 3;    // For pagination
+  int32 current_page = 4;
+}
+
+message StatusResponse {
+  bool success = 1;
+  string message = 2;
+  int32 error_code = 3;     // Error code for programmatic handling
+}
+
+message InterfaceStatsResponse {
+  repeated InterfaceStats interfaces = 1;
+  int64 timestamp = 2;
+}
+
+message SystemInfoResponse {
+  SystemInfo system = 1;
+  Statistics stats = 2;
+}
+
+message BackupResponse {
+  bool success = 1;
+  string message = 2;
+  bytes config_data = 3;    // Configuration backup data
+  int64 timestamp = 4;      // Backup timestamp
+  string checksum = 5;      // SHA256 checksum
+} 

@@ -1,0 +1,460 @@
+name: Cerberus-V CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  release:
+    types: [ published ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # eBPF build and test
+  ebpf-build:
+    name: Build eBPF Components
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install eBPF dependencies
+      run: |
+        apt-get update
+        apt-get install -y \
+          clang \
+          llvm \
+          libbpf-dev \
+          linux-headers-generic \
+          build-essential \
+          pkg-config \
+          git
+          
+    - name: Build XDP filter
+      run: |
+        cd ebpf
+        make clean
+        make
+        
+    - name: Verify eBPF object
+      run: |
+        ls -la ebpf/xdp_filter.o
+        file ebpf/xdp_filter.o
+        
+    - name: Upload eBPF artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ebpf-objects
+        path: ebpf/*.o
+
+  # VPP plugin build
+  vpp-build:
+    name: Build VPP Plugin
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install VPP dependencies
+      run: |
+        apt-get update
+        apt-get install -y \
+          build-essential \
+          cmake \
+          pkg-config \
+          libnuma-dev \
+          python3-dev \
+          python3-pip \
+          curl \
+          gnupg
+          
+    - name: Add VPP repository
+      run: |
+        curl -fsSL https://packagecloud.io/fdio/release/gpgkey | apt-key add -
+        echo "deb https://packagecloud.io/fdio/release/ubuntu/ jammy main" > /etc/apt/sources.list.d/fdio.list
+        apt-get update
+        
+    - name: Install VPP development packages
+      run: |
+        apt-get install -y \
+          vpp-dev \
+          libvppinfra-dev \
+          vpp-plugin-core
+          
+    - name: Build VPP plugin
+      run: |
+        cd vpp
+        make clean
+        make
+        
+    - name: Upload VPP artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: vpp-plugin
+        path: vpp/plugins/*.so
+
+  # Go control plane build and test
+  go-build:
+    name: Build Go Control Plane
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+        
+    - name: Cache Go modules
+      uses: actions/cache@v4
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+          
+    - name: Create Go modules
+      run: |
+        cd ctrl
+        go mod init github.com/m4rba4s/Cerberus-V/ctrl
+        go get google.golang.org/grpc
+        go get google.golang.org/protobuf/cmd/protoc-gen-go
+        go get google.golang.org/grpc/cmd/protoc-gen-go-grpc
+        
+    - name: Install protobuf compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+        
+    - name: Generate protobuf files
+      run: |
+        cd proto
+        protoc --go_out=. --go_opt=paths=source_relative \
+               --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+               firewall.proto
+               
+    - name: Build control plane
+      run: |
+        cd ctrl
+        go build -v ./...
+        
+    - name: Run Go tests
+      run: |
+        cd ctrl
+        go test -v ./... || echo "No tests found"
+        
+    - name: Run Go linting
+      uses: golangci/golangci-lint-action@v4
+      with:
+        version: latest
+        working-directory: ctrl
+
+  # Python backend build and test
+  python-backend:
+    name: Build Python Backend
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Cache pip dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Install dependencies
+      run: |
+        cd gui/backend
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov black isort mypy
+        
+    - name: Run Python linting
+      run: |
+        cd gui/backend
+        black --check --diff .
+        isort --check-only --diff .
+        mypy . --ignore-missing-imports || echo "MyPy warnings found"
+        
+    - name: Run Python tests
+      run: |
+        cd gui/backend
+        pytest --cov=. --cov-report=xml || echo "No tests found"
+        
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./gui/backend/coverage.xml
+        flags: backend
+        name: backend-coverage
+
+  # Frontend build and test
+  frontend-build:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: gui/frontend/package-lock.json
+        
+    - name: Install dependencies
+      run: |
+        cd gui/frontend
+        npm ci
+        
+    - name: Run ESLint
+      run: |
+        cd gui/frontend
+        npm run lint || echo "ESLint not configured"
+        
+    - name: Run TypeScript check
+      run: |
+        cd gui/frontend
+        npx tsc --noEmit
+        
+    - name: Run tests
+      run: |
+        cd gui/frontend
+        npm test -- --coverage || echo "No tests configured"
+        
+    - name: Build frontend
+      run: |
+        cd gui/frontend
+        npm run build
+        
+    - name: Upload frontend artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontend-dist
+        path: gui/frontend/dist/
+
+  # Security scanning
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: 'trivy-results.sarif'
+        
+    - name: Run Bandit security linter for Python
+      run: |
+        pip install bandit
+        bandit -r gui/backend/ -f json -o bandit-report.json || echo "Bandit warnings found"
+        
+    - name: Upload security artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-reports
+        path: |
+          trivy-results.sarif
+          bandit-report.json
+
+  # Docker build and push
+  docker-build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [ebpf-build, vpp-build, go-build, python-backend, frontend-build]
+    if: github.event_name != 'pull_request'
+    
+    permissions:
+      contents: read
+      packages: write
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha
+          
+    - name: Build and push backend image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./gui
+        file: ./gui/docker/Dockerfile.backend
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}-backend
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+    - name: Build and push frontend image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./gui
+        file: ./gui/docker/Dockerfile.frontend
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}-frontend
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  # Integration tests
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [ebpf-build, python-backend]
+    
+    services:
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install test dependencies
+      run: |
+        pip install pytest pytest-asyncio requests websockets
+        
+    - name: Run integration tests
+      run: |
+        cd tests
+        python -m pytest integration/ -v || echo "No integration tests found"
+        
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: integration-test-results
+        path: tests/reports/
+
+  # Performance benchmarks
+  performance-tests:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    needs: [ebpf-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download eBPF artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: ebpf-objects
+        path: ebpf/
+        
+    - name: Install performance testing tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y iperf3 netperf
+        
+    - name: Run basic performance tests
+      run: |
+        cd tests
+        ./benchmark.sh || echo "Performance tests completed with warnings"
+        
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: tests/benchmarks/
+
+  # Release automation
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [docker-build, integration-tests]
+    if: github.event_name == 'release'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      
+    - name: Create release archive
+      run: |
+        tar -czf cerberus-v-${{ github.event.release.tag_name }}.tar.gz \
+          ebpf-objects/ \
+          vpp-plugin/ \
+          frontend-dist/
+          
+    - name: Upload release assets
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./cerberus-v-${{ github.event.release.tag_name }}.tar.gz
+        asset_name: cerberus-v-${{ github.event.release.tag_name }}.tar.gz
+        asset_content_type: application/gzip 

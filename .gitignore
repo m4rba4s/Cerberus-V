@@ -209,6 +209,8 @@ vpp_restart_count
 vendor/
 go.work
 go.work.sum
+ctrl/cerberus-ctrl
+ctrl/go.sum
 
 # Rust specific (if used)
 target/
