@@ -1,0 +1,68 @@
+#!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# Cerberus-V Pre-Start Script - System Preparation
+
+set -euo pipefail
+
+# Logging
+exec > >(logger -t cerberus-prestart) 2>&1
+
+echo "🚀 Cerberus-V Pre-Start: Preparing system..."
+
+# Create required directories
+mkdir -p /var/lib/cerberus
+mkdir -p /var/log/cerberus
+mkdir -p /run/cerberus
+mkdir -p /sys/fs/bpf
+
+# Set permissions
+chown cerberus:cerberus /var/lib/cerberus
+chown cerberus:cerberus /var/log/cerberus
+chown cerberus:cerberus /run/cerberus
+
+# Mount BPF filesystem if not mounted
+if ! mountpoint -q /sys/fs/bpf; then
+    echo "📁 Mounting BPF filesystem..."
+    mount -t bpf bpf /sys/fs/bpf
+fi
+
+# Configure hugepages for VPP
+if [[ -d /dev/hugepages ]]; then
+    echo "💾 Configuring hugepages for VPP..."
+    echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+    mount -t hugetlbfs nodev /dev/hugepages 2>/dev/null || true
+fi
+
+# Check network interfaces
+echo "🌐 Checking network interfaces..."
+INTERFACE=${XDP_INTERFACE:-eth0}
+if ! ip link show "$INTERFACE" >/dev/null 2>&1; then
+    echo "⚠️  Warning: Interface $INTERFACE not found"
+    # Try to find a suitable interface
+    INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+    echo "🔄 Using interface: $INTERFACE"
+fi
+
+# Load required kernel modules
+echo "🔧 Loading kernel modules..."
+modprobe -q bpf || true
+modprobe -q uio || true
+modprobe -q uio_pci_generic || true
+
+# Check for required tools
+echo "🔍 Checking required tools..."
+command -v bpftool >/dev/null || echo "⚠️  Warning: bpftool not found"
+command -v vppctl >/dev/null || echo "⚠️  Warning: vppctl not found"
+
+# Clean up stale BPF maps
+echo "🧹 Cleaning up stale BPF maps..."
+rm -f /sys/fs/bpf/cerberus_* 2>/dev/null || true
+
+# Save interface info for data plane
+echo "$INTERFACE" > /run/cerberus/interface
+
+echo "✅ Pre-start preparation completed"
+echo "   • BPF filesystem: mounted"
+echo "   • Hugepages: configured"
+echo "   • Interface: $INTERFACE"
+echo "   • Directories: created" 

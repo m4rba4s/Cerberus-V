@@ -1,0 +1,26 @@
+[Unit]
+Description=Cerberus-V Maintenance Service
+Documentation=https://github.com/m4rba4s/Cerberus-V
+After=cerberus.target
+
+[Service]
+Type=oneshot
+User=cerberus
+Group=cerberus
+ExecStart=/usr/local/bin/cerberus-maintenance
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cerberus-maintenance
+
+# Security settings
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ReadWritePaths=/var/lib/cerberus
+ReadWritePaths=/var/log/cerberus
+ReadOnlyPaths=/etc/cerberus
+
+# Environment
+Environment=CERBERUS_CONFIG=/etc/cerberus/maintenance.conf 

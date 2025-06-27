@@ -1,0 +1,9 @@
+[Unit]
+Description=Cerberus-V Dual-Layer Firewall System
+Documentation=https://github.com/m4rba4s/Cerberus-V
+Wants=cerberus-ctrl.service cerberus-dataplane.service
+After=cerberus-ctrl.service cerberus-dataplane.service
+AllowIsolate=yes
+
+[Install]
+WantedBy=multi-user.target 

@@ -1,0 +1,58 @@
+# Cerberus-V Control Plane Dockerfile
+# SPDX-License-Identifier: Apache-2.0
+
+# Build stage
+FROM golang:1.21-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git make gcc musl-dev linux-headers
+
+# Set working directory
+WORKDIR /app
+
+# Copy go mod files
+COPY ctrl/go.mod ctrl/go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY ctrl/ ./
+COPY proto/ ../proto/
+
+# Build the application
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o control-plane .
+
+# Runtime stage
+FROM alpine:latest
+
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates libc6-compat
+
+# Create app user
+RUN addgroup -g 1001 -S cerberus && \
+    adduser -S cerberus -u 1001 -G cerberus
+
+# Create directories
+RUN mkdir -p /app/logs /app/configs && \
+    chown -R cerberus:cerberus /app
+
+# Copy binary
+COPY --from=builder /app/control-plane /app/
+COPY --chown=cerberus:cerberus configs/ /app/configs/
+
+# Switch to app user
+USER cerberus
+
+# Set working directory
+WORKDIR /app
+
+# Expose ports
+EXPOSE 50051 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD nc -z localhost 50051 || exit 1
+
+# Set entrypoint
+ENTRYPOINT ["./control-plane"] 

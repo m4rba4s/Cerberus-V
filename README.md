@@ -6,10 +6,13 @@
 
 **Production-Grade Dual-Layer Firewall: VPP + eBPF + gRPC Control Plane**
 
+[![Build Status](https://github.com/m4rba4s/Cerberus-V/actions/workflows/ci.yml/badge.svg)](https://github.com/m4rba4s/Cerberus-V/actions)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20(Fedora%2042%2B)-orange.svg)](https://fedoraproject.org/)
 [![VPP](https://img.shields.io/badge/VPP-24.02-blue.svg)](https://fd.io/vpp/)
 [![eBPF](https://img.shields.io/badge/eBPF-CO--RE%20%2B%20libbpf-purple.svg)](https://ebpf.io/)
+[![Go Report Card](https://goreportcard.com/badge/github.com/m4rba4s/Cerberus-V)](https://goreportcard.com/report/github.com/m4rba4s/Cerberus-V)
+[![Docker Pulls](https://img.shields.io/docker/pulls/ghcr.io/m4rba4s/cerberus-v)](https://github.com/m4rba4s/Cerberus-V/pkgs/container/cerberus-v)
 
 [Features](#features) • [Architecture](#architecture) • [Installation](#installation) • [Usage](#usage) • [API](#api) • [Contributing](#contributing)
 

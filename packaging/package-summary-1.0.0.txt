@@ -1,0 +1,43 @@
+Cerberus-V Package Build Summary
+================================
+Generated: Fri Jun 27 12:55:12 PM CEST 2025
+Version: 1.0.0-1
+Build Host: synthetic
+Build User: mindlock
+
+Packages Built:
+===============
+✅ tar.gz packages:
+   /home/mindlock/vppebpf/packaging/cerberus-v-1.0.0-1.tar.gz (2.4M)
+✅ docker.tar packages:
+   /home/mindlock/vppebpf/packaging/cerberus-v-1.0.0.docker.tar (39)
+
+Installation Instructions:
+=========================
+
+RPM (Red Hat/Fedora/CentOS):
+  sudo rpm -ivh cerberus-v-*.rpm
+  sudo systemctl enable --now cerberus.target
+
+DEB (Debian/Ubuntu):
+  sudo dpkg -i cerberus-v-*.deb
+  sudo apt-get install -f  # Fix dependencies if needed
+  sudo systemctl enable --now cerberus.target
+
+TAR.GZ (Universal):
+  tar -xzf cerberus-v-*.tar.gz
+  cd cerberus-v-*
+  sudo ./install.sh
+
+Docker:
+  docker load < cerberus-v-*.docker.tar
+  docker run -d --name cerberus-v --privileged --net=host cerberus-v:1.0.0
+
+Post-Installation:
+==================
+1. Configure: /etc/cerberus-v/cerberus.conf
+2. Add rules: /etc/cerberus-v/rules.d/
+3. Check status: systemctl status cerberus.target
+4. View logs: journalctl -u cerberus-ctrl.service
+5. Web interface: http://localhost:3000
+6. Metrics: http://localhost:8080/metrics

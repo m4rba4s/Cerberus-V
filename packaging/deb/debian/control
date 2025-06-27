@@ -1,0 +1,75 @@
+Source: cerberus-v
+Section: net
+Priority: optional
+Maintainer: AI Assistant <funcybot@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               golang-1.21 | golang (>= 2:1.21),
+               gcc,
+               make,
+               clang (>= 1:14),
+               llvm (>= 1:14),
+               libbpf-dev,
+               linux-headers-generic | linux-headers-amd64,
+               libelf-dev,
+               zlib1g-dev,
+               pkg-config
+Standards-Version: 4.6.2
+Homepage: https://github.com/m4rba4s/Cerberus-V
+Vcs-Git: https://github.com/m4rba4s/Cerberus-V.git
+Vcs-Browser: https://github.com/m4rba4s/Cerberus-V
+Rules-Requires-Root: no
+
+Package: cerberus-v
+Architecture: amd64
+Depends: ${shlibs:Depends},
+         ${misc:Depends},
+         libbpf0,
+         systemd,
+         iproute2,
+         iptables,
+         python3,
+         python3-pip
+Suggests: cerberus-v-gui
+Description: Cerberus-V Dual-Layer Firewall (eBPF + VPP)
+ Cerberus-V is an enterprise-grade dual-layer firewall combining:
+ .
+  - Layer 1: eBPF/XDP for high-performance packet filtering
+  - Layer 2: VPP (Vector Packet Processing) for advanced DPI
+  - gRPC Control Plane for centralized management
+  - Web GUI for monitoring and configuration
+  - Prometheus metrics integration
+  - systemd integration for production deployment
+ .
+ Features include 10Gbps+ packet processing performance, DDoS attack
+ detection and mitigation, geographic IP filtering, application layer
+ inspection, real-time traffic analytics, RESTful API for automation,
+ and production-ready logging.
+
+Package: cerberus-v-dev
+Architecture: amd64
+Depends: ${misc:Depends},
+         cerberus-v (= ${binary:Version})
+Description: Development files for Cerberus-V
+ Development files and headers for extending Cerberus-V firewall.
+ .
+ This package contains the development tools, documentation, and
+ examples needed to build custom plugins and extensions for the
+ Cerberus-V firewall system.
+
+Package: cerberus-v-gui
+Architecture: all
+Depends: ${misc:Depends},
+         cerberus-v (>= ${source:Version}),
+         nodejs (>= 18),
+         npm
+Description: Web GUI for Cerberus-V
+ Modern React-based web interface for Cerberus-V firewall management.
+ Provides real-time monitoring, configuration management, and analytics.
+ .
+ Features include:
+  - Real-time traffic monitoring
+  - Interactive configuration management
+  - Security analytics dashboard
+  - Attack visualization
+  - Performance metrics
+  - Rule management interface 

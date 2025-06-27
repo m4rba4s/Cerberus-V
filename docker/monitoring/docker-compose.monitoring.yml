@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: Apache-2.0
+# Cerberus-V Monitoring Stack Docker Compose
+# Author: funcybot@gmail.com  Date: 2025-06-27
+
+version: '3.8'
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: cerberus-prometheus-monitoring
+    hostname: prometheus
+    restart: unless-stopped
+    networks:
+      - monitoring
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    configs:
+      - source: prometheus-config
+        target: /etc/prometheus/prometheus.yml
+    labels:
+      - "cerberus.service=prometheus"
+
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: cerberus-grafana-monitoring
+    hostname: grafana
+    restart: unless-stopped
+    networks:
+      - monitoring
+    ports:
+      - "3005:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=monitoring123
+    depends_on:
+      - prometheus
+    labels:
+      - "cerberus.service=grafana"
+
+networks:
+  monitoring:
+    name: cerberus-monitoring
+    driver: bridge
+
+volumes:
+  prometheus-data:
+    name: cerberus-prometheus-data
+  grafana-data:
+    name: cerberus-grafana-data
+
+configs:
+  prometheus-config:
+    content: |
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+
+      scrape_configs:
+        # Cerberus-V Control Plane
+        - job_name: 'cerberus-ctrl'
+          static_configs:
+            - targets: ['host.docker.internal:8080']
+          metrics_path: '/metrics'
+          scrape_interval: 10s
+
+        # Prometheus self-monitoring
+        - job_name: 'prometheus'
+          static_configs:
+            - targets: ['localhost:9090']
+
+        # Cerberus-V HTTP endpoints
+        - job_name: 'cerberus-http'
+          static_configs:
+            - targets: ['host.docker.internal:50051']
+          metrics_path: '/health'
+          scrape_interval: 30s 

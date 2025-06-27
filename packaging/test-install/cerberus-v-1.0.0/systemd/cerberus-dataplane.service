@@ -1,0 +1,73 @@
+[Unit]
+Description=Cerberus-V Data Plane - XDP + VPP Packet Processing
+Documentation=https://github.com/m4rba4s/Cerberus-V
+After=network-online.target cerberus-ctrl.service
+Wants=network-online.target
+Requires=cerberus-ctrl.service
+PartOf=cerberus.target
+
+[Service]
+Type=forking
+User=root
+Group=root
+ExecStartPre=/usr/local/bin/cerberus-prestart
+ExecStart=/usr/local/bin/cerberus-dataplane
+ExecStartPost=/usr/local/bin/cerberus-poststart
+ExecStop=/usr/local/bin/cerberus-dataplane-stop
+ExecReload=/usr/local/bin/cerberus-dataplane-reload
+PIDFile=/run/cerberus/dataplane.pid
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+# Must run as root for XDP/VPP operations
+User=root
+Group=root
+
+# Security settings (relaxed for kernel operations)
+NoNewPrivileges=no
+ProtectSystem=no
+ProtectHome=yes
+ProtectKernelTunables=no
+ProtectKernelModules=no
+ProtectControlGroups=no
+
+# Network capabilities
+PrivateNetwork=no
+
+# File system access
+ReadWritePaths=/var/lib/cerberus
+ReadWritePaths=/var/log/cerberus
+ReadWritePaths=/run/cerberus
+ReadWritePaths=/sys/fs/bpf
+ReadWritePaths=/dev/hugepages
+ReadOnlyPaths=/etc/cerberus
+PrivateTmp=yes
+
+# Full capabilities for kernel operations
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_RESOURCE CAP_IPC_LOCK CAP_SYS_PTRACE
+AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_RESOURCE CAP_IPC_LOCK
+
+# Environment
+Environment=CERBERUS_CONFIG=/etc/cerberus/dataplane.conf
+Environment=CERBERUS_LOG_LEVEL=info
+Environment=VPP_CONFIG=/etc/cerberus/vpp.conf
+Environment=XDP_INTERFACE=eth0
+Environment=HUGEPAGES_DIR=/dev/hugepages
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cerberus-dataplane
+
+# Process limits
+LimitNOFILE=65536
+LimitNPROC=4096
+LimitMEMLOCK=infinity
+
+# OOM protection
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target 

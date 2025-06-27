@@ -1,0 +1,278 @@
+# SPDX-License-Identifier: Apache-2.0
+# Cerberus-V Development Docker Compose
+# Author: funcybot@gmail.com  Date: 2025-06-27
+
+version: '3.8'
+
+services:
+  # ======================
+  # Core Development Services
+  # ======================
+  
+  cerberus-ctrl-dev:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.ctrl
+    container_name: cerberus-ctrl-dev
+    hostname: cerberus-ctrl-dev
+    restart: "no"
+    privileged: false
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - cerberus-dev
+    ports:
+      - "50051:50051"
+      - "50052:50052"
+      - "8080:8080"
+    volumes:
+      - ../../ctrl:/app/ctrl:ro
+      - ../../ebpf:/app/ebpf:ro
+      - ../../configs:/etc/cerberus-v:ro
+      - ./logs:/var/log/cerberus-v
+    environment:
+      - CERBERUS_LOG_LEVEL=debug
+      - CERBERUS_DEV_MODE=true
+      - CERBERUS_METRICS_ENABLED=true
+      - CERBERUS_INTERFACE=lo
+      - CERBERUS_XDP_MODE=skb
+    command: ["./cerberus-ctrl", "--dev", "--reload"]
+    labels:
+      - "cerberus.env=development"
+      - "cerberus.service=control-plane"
+
+  # ======================
+  # Development GUI
+  # ======================
+
+  cerberus-gui-dev:
+    build:
+      context: ../../gui/frontend
+      dockerfile: Dockerfile.dev
+    container_name: cerberus-gui-dev
+    hostname: cerberus-gui-dev
+    restart: "no"
+    networks:
+      - cerberus-dev
+    ports:
+      - "3000:3000"
+      - "3001:3001"  # HMR port
+    volumes:
+      - ../../gui/frontend/src:/app/src
+      - ../../gui/frontend/public:/app/public
+    environment:
+      - REACT_APP_API_URL=http://localhost:50052
+      - REACT_APP_WS_URL=ws://localhost:50052/ws
+      - REACT_APP_DEV_MODE=true
+      - FAST_REFRESH=true
+      - CHOKIDAR_USEPOLLING=true
+    command: ["npm", "run", "dev"]
+    labels:
+      - "cerberus.env=development"
+      - "cerberus.service=gui"
+
+  # ======================
+  # Development Backend API
+  # ======================
+
+  cerberus-backend-dev:
+    build:
+      context: ../../gui/backend
+      dockerfile: Dockerfile.dev
+    container_name: cerberus-backend-dev
+    hostname: cerberus-backend-dev
+    restart: "no"
+    networks:
+      - cerberus-dev
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../../gui/backend:/app
+      - ./logs:/app/logs
+    environment:
+      - PYTHONPATH=/app
+      - FLASK_ENV=development
+      - FLASK_DEBUG=true
+      - CERBERUS_CTRL_URL=http://cerberus-ctrl-dev:50052
+      - DATABASE_URL=sqlite:///dev.db
+    command: ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=8000", "--reload"]
+    depends_on:
+      - cerberus-ctrl-dev
+    labels:
+      - "cerberus.env=development"
+      - "cerberus.service=backend"
+
+  # ======================
+  # Development Database
+  # ======================
+
+  postgres-dev:
+    image: postgres:15-alpine
+    container_name: cerberus-postgres-dev
+    hostname: postgres-dev
+    restart: "no"
+    networks:
+      - cerberus-dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-dev-data:/var/lib/postgresql/data
+      - ./init-dev.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      - POSTGRES_DB=cerberus_dev
+      - POSTGRES_USER=cerberus_dev
+      - POSTGRES_PASSWORD=dev123
+    labels:
+      - "cerberus.env=development"
+      - "cerberus.service=database"
+
+  redis-dev:
+    image: redis:7.0-alpine
+    container_name: cerberus-redis-dev
+    hostname: redis-dev
+    restart: "no"
+    networks:
+      - cerberus-dev
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-dev-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb
+    labels:
+      - "cerberus.env=development"
+      - "cerberus.service=cache"
+
+  # ======================
+  # Development Tools
+  # ======================
+
+  prometheus-dev:
+    image: prom/prometheus:v2.45.0
+    container_name: cerberus-prometheus-dev
+    hostname: prometheus-dev
+    restart: "no"
+    networks:
+      - cerberus-dev
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus-dev.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-dev-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+      - '--log.level=debug'
+    labels:
+      - "cerberus.env=development"
+      - "cerberus.service=monitoring"
+
+  grafana-dev:
+    image: grafana/grafana:10.0.0
+    container_name: cerberus-grafana-dev
+    hostname: grafana-dev
+    restart: "no"
+    networks:
+      - cerberus-dev
+    ports:
+      - "3002:3000"
+    volumes:
+      - grafana-dev-data:/var/lib/grafana
+      - ./grafana-dev:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=dev123
+      - GF_USERS_ALLOW_SIGN_UP=true
+      - GF_LOG_LEVEL=debug
+      - GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION=false
+    depends_on:
+      - prometheus-dev
+    labels:
+      - "cerberus.env=development"
+      - "cerberus.service=monitoring"
+
+  # ======================
+  # Development Testing
+  # ======================
+
+  test-runner:
+    build:
+      context: ../../tests
+      dockerfile: Dockerfile.test
+    container_name: cerberus-test-runner
+    hostname: test-runner
+    restart: "no"
+    networks:
+      - cerberus-dev
+    volumes:
+      - ../../tests:/app/tests
+      - ../../:/app/project:ro
+      - ./test-results:/app/results
+    environment:
+      - CERBERUS_TEST_MODE=true
+      - CERBERUS_CTRL_URL=http://cerberus-ctrl-dev:50052
+      - PYTHONPATH=/app
+    command: ["python", "-m", "pytest", "--verbose", "--junit-xml=/app/results/results.xml"]
+    depends_on:
+      - cerberus-ctrl-dev
+    profiles:
+      - testing
+    labels:
+      - "cerberus.env=development"
+      - "cerberus.service=testing"
+
+  # ======================
+  # Hot Reload File Watcher
+  # ======================
+
+  file-watcher:
+    image: node:18-alpine
+    container_name: cerberus-file-watcher
+    hostname: file-watcher
+    restart: "no"
+    networks:
+      - cerberus-dev
+    volumes:
+      - ../../:/app/project:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: /app/project
+    command: >
+      sh -c "
+        npm install -g nodemon chokidar-cli &&
+        chokidar '**/*.go' '**/*.c' '**/*.py' '**/*.ts' '**/*.tsx' 
+        --ignore 'node_modules/**' 
+        --ignore 'target/**' 
+        --ignore '.git/**'
+        -c 'echo File changed: {path} && docker-compose restart cerberus-ctrl-dev'
+      "
+    profiles:
+      - development
+    labels:
+      - "cerberus.env=development"
+      - "cerberus.service=dev-tools"
+
+# ======================
+# Development Networks
+# ======================
+
+networks:
+  cerberus-dev:
+    name: cerberus-dev
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.1.0/24
+
+# ======================
+# Development Volumes
+# ======================
+
+volumes:
+  postgres-dev-data:
+    name: cerberus-postgres-dev-data
+  redis-dev-data:
+    name: cerberus-redis-dev-data
+  prometheus-dev-data:
+    name: cerberus-prometheus-dev-data
+  grafana-dev-data:
+    name: cerberus-grafana-dev-data 

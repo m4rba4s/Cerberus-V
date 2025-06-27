@@ -1,0 +1,67 @@
+[Unit]
+Description=Cerberus-V Control Plane - Dual-Layer Firewall Manager
+Documentation=https://github.com/m4rba4s/Cerberus-V
+After=network-online.target
+Wants=network-online.target
+PartOf=cerberus.target
+Before=cerberus-dataplane.service
+
+[Service]
+Type=exec
+User=cerberus
+Group=cerberus
+ExecStart=/usr/local/bin/cerberus-ctrl
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Security settings
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# Network access
+PrivateNetwork=no
+IPAddressDeny=any
+IPAddressAllow=localhost
+IPAddressAllow=127.0.0.0/8
+IPAddressAllow=::1/128
+
+# File system access
+ReadWritePaths=/var/lib/cerberus
+ReadWritePaths=/var/log/cerberus
+ReadWritePaths=/run/cerberus
+ReadOnlyPaths=/etc/cerberus
+PrivateTmp=yes
+
+# Capabilities needed for eBPF
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN
+
+# Environment
+Environment=CERBERUS_CONFIG=/etc/cerberus/ctrl.conf
+Environment=CERBERUS_LOG_LEVEL=info
+Environment=GRPC_PORT=50051
+Environment=METRICS_PORT=8080
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cerberus-ctrl
+
+# Process limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
+Also=cerberus-dataplane.service 

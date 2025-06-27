@@ -1,0 +1,12 @@
+[Unit]
+Description=Cerberus-V Maintenance Timer
+Documentation=https://github.com/m4rba4s/Cerberus-V
+Requires=cerberus-maintenance.service
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=yes
+
+[Install]
+WantedBy=timers.target 

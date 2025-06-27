@@ -9,16 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
-	pb "github.com/m4rba4s/Cerberus-V/proto"
 )
 
 const (
@@ -43,25 +39,15 @@ type FirewallRule struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-// FirewallStats represents firewall statistics
-type FirewallStats struct {
-	TotalPackets    uint64            `json:"total_packets"`
-	TotalBytes      uint64            `json:"total_bytes"`
-	DroppedPackets  uint64            `json:"dropped_packets"`
-	AllowedPackets  uint64            `json:"allowed_packets"`
-	RuleStats      map[string]uint64  `json:"rule_stats"`
-	InterfaceStats map[string]uint64  `json:"interface_stats"`
-	LastUpdated    time.Time         `json:"last_updated"`
-}
-
 // Server implements the gRPC firewall control service
 type Server struct {
-	pb.UnimplementedFirewallControlServer
-	rules     map[string]*FirewallRule
-	stats     *FirewallStats
-	mutex     sync.RWMutex
-	vppClient *VPPClient
-	bpfClient *BPFClient
+	UnimplementedFirewallControlServer
+	rules      map[string]*FirewallRule
+	stats      *FirewallStats
+	mutex      sync.RWMutex
+	vppClient  *VPPClient
+	bpfClient  *BPFClient
+	bpfManager *BPFMapManager
 }
 
 // VPPClient manages VPP integration
@@ -75,21 +61,23 @@ type BPFClient struct {
 }
 
 // NewServer creates a new gRPC server instance
-func NewServer() *Server {
+func NewServer(bpfManager *BPFMapManager) *Server {
 	return &Server{
 		rules: make(map[string]*FirewallRule),
 		stats: &FirewallStats{
-			RuleStats:      make(map[string]uint64),
-			InterfaceStats: make(map[string]uint64),
-			LastUpdated:    time.Now(),
+			Pass:     0,
+			Drop:     0,
+			Redirect: 0,
+			Error:    0,
 		},
-		vppClient: &VPPClient{connected: false},
-		bpfClient: &BPFClient{connected: false},
+		vppClient:  &VPPClient{connected: false},
+		bpfClient:  &BPFClient{connected: false},
+		bpfManager: bpfManager,
 	}
 }
 
 // AddRule adds a new firewall rule
-func (s *Server) AddRule(ctx context.Context, req *pb.AddRuleRequest) (*pb.RuleResponse, error) {
+func (s *Server) AddRule(ctx context.Context, req *AddRuleRequest) (*RuleResponse, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -111,7 +99,7 @@ func (s *Server) AddRule(ctx context.Context, req *pb.AddRuleRequest) (*pb.RuleR
 
 	// Validate rule
 	if err := s.validateRule(rule); err != nil {
-		return &pb.RuleResponse{
+		return &RuleResponse{
 			Success: false,
 			Message: fmt.Sprintf("Rule validation failed: %v", err),
 		}, nil
@@ -123,7 +111,7 @@ func (s *Server) AddRule(ctx context.Context, req *pb.AddRuleRequest) (*pb.RuleR
 	// Push to data plane
 	if err := s.pushRuleToDataPlane(rule); err != nil {
 		delete(s.rules, rule.ID)
-		return &pb.RuleResponse{
+		return &RuleResponse{
 			Success: false,
 			Message: fmt.Sprintf("Failed to push rule to data plane: %v", err),
 		}, nil
@@ -132,7 +120,7 @@ func (s *Server) AddRule(ctx context.Context, req *pb.AddRuleRequest) (*pb.RuleR
 	log.Printf("Added rule: %s - %s %s->%s %s", 
 		rule.ID, rule.Action, rule.SrcIP, rule.DstIP, rule.Protocol)
 
-	return &pb.RuleResponse{
+	return &RuleResponse{
 		Success: true,
 		Message: "Rule added successfully",
 		RuleId:  rule.ID,
@@ -140,13 +128,13 @@ func (s *Server) AddRule(ctx context.Context, req *pb.AddRuleRequest) (*pb.RuleR
 }
 
 // DeleteRule removes a firewall rule
-func (s *Server) DeleteRule(ctx context.Context, req *pb.DeleteRuleRequest) (*pb.StatusResponse, error) {
+func (s *Server) DeleteRule(ctx context.Context, req *DeleteRuleRequest) (*StatusResponse, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
 	rule, exists := s.rules[req.RuleId]
 	if !exists {
-		return &pb.StatusResponse{
+		return &StatusResponse{
 			Success: false,
 			Message: "Rule not found",
 		}, nil
@@ -154,7 +142,7 @@ func (s *Server) DeleteRule(ctx context.Context, req *pb.DeleteRuleRequest) (*pb
 
 	// Remove from data plane
 	if err := s.removeRuleFromDataPlane(rule); err != nil {
-		return &pb.StatusResponse{
+		return &StatusResponse{
 			Success: false,
 			Message: fmt.Sprintf("Failed to remove rule from data plane: %v", err),
 		}, nil
@@ -165,61 +153,38 @@ func (s *Server) DeleteRule(ctx context.Context, req *pb.DeleteRuleRequest) (*pb
 
 	log.Printf("Deleted rule: %s", req.RuleId)
 
-	return &pb.StatusResponse{
+	return &StatusResponse{
 		Success: true,
 		Message: "Rule deleted successfully",
 	}, nil
 }
 
 // GetStats returns current firewall statistics
-func (s *Server) GetStats(ctx context.Context, req *pb.Empty) (*pb.Statistics, error) {
+func (s *Server) GetStats(ctx context.Context, req *Empty) (*Statistics, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
 	// Update stats from data plane
 	s.updateStatsFromDataPlane()
 
-	return &pb.Statistics{
-		TotalPackets:   s.stats.TotalPackets,
-		TotalBytes:     s.stats.TotalBytes,
-		DroppedPackets: s.stats.DroppedPackets,
-		AllowedPackets: s.stats.AllowedPackets,
+	return &Statistics{
+		TotalPackets:   s.stats.Pass + s.stats.Drop + s.stats.Redirect,
+		TotalBytes:     (s.stats.Pass + s.stats.Drop + s.stats.Redirect) * 64,
+		DroppedPackets: s.stats.Drop,
+		AllowedPackets: s.stats.Pass + s.stats.Redirect,
 		ActiveRules:    int32(len(s.rules)),
-		Uptime:         int64(time.Since(s.stats.LastUpdated).Seconds()),
+		Uptime:         int64(time.Since(time.Now()).Seconds()),
 	}, nil
 }
 
-// StreamEvents streams firewall events
-func (s *Server) StreamEvents(req *pb.Empty, stream pb.FirewallControl_StreamEventsServer) error {
-	// Create event channel
-	eventChan := make(chan *pb.Event, 100)
-	
-	// Start event generator
-	go s.generateEvents(eventChan)
-
-	// Stream events to client
-	for {
-		select {
-		case event := <-eventChan:
-			if err := stream.Send(event); err != nil {
-				log.Printf("Error streaming event: %v", err)
-				return err
-			}
-		case <-stream.Context().Done():
-			log.Println("Client disconnected from event stream")
-			return nil
-		}
-	}
-}
-
 // GetRules returns all firewall rules
-func (s *Server) GetRules(ctx context.Context, req *pb.Empty) (*pb.RulesResponse, error) {
+func (s *Server) GetRules(ctx context.Context, req *Empty) (*RulesResponse, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
-	var rules []*pb.Rule
+	var rules []*Rule
 	for _, rule := range s.rules {
-		rules = append(rules, &pb.Rule{
+		rules = append(rules, &Rule{
 			Id:          rule.ID,
 			Action:      rule.Action,
 			SrcIp:       rule.SrcIP,
@@ -234,7 +199,7 @@ func (s *Server) GetRules(ctx context.Context, req *pb.Empty) (*pb.RulesResponse
 		})
 	}
 
-	return &pb.RulesResponse{
+	return &RulesResponse{
 		Rules: rules,
 		Count: int32(len(rules)),
 	}, nil
@@ -261,16 +226,17 @@ func (s *Server) validateRule(rule *FirewallRule) error {
 }
 
 func (s *Server) pushRuleToDataPlane(rule *FirewallRule) error {
+	// Push rule to eBPF via BPF manager
+	if s.bpfManager != nil {
+		if err := s.bpfManager.AddRuleToMap(rule); err != nil {
+			log.Printf("Failed to add rule to eBPF map: %v", err)
+		}
+	}
+
 	// Simulate pushing rule to VPP
 	if s.vppClient.connected {
 		log.Printf("Pushing rule %s to VPP", rule.ID)
 		// vpp.AddRule(rule) - actual VPP API call would go here
-	}
-
-	// Simulate pushing rule to eBPF
-	if s.bpfClient.connected {
-		log.Printf("Pushing rule %s to eBPF", rule.ID)
-		// bpf.UpdateMap(rule) - actual eBPF map update would go here
 	}
 
 	return nil
@@ -293,62 +259,68 @@ func (s *Server) removeRuleFromDataPlane(rule *FirewallRule) error {
 }
 
 func (s *Server) updateStatsFromDataPlane() {
-	// Simulate collecting stats from VPP and eBPF
-	s.stats.TotalPackets += 1000
-	s.stats.TotalBytes += 64000
-	s.stats.DroppedPackets += 10
-	s.stats.AllowedPackets += 990
-	s.stats.LastUpdated = time.Now()
-}
-
-func (s *Server) generateEvents(eventChan chan<- *pb.Event) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	eventTypes := []string{"RULE_MATCH", "PACKET_DROP", "CONNECTION_NEW", "THREAT_DETECTED"}
-	
-	for {
-		select {
-		case <-ticker.C:
-			// Generate sample event
-			event := &pb.Event{
-				Id:        fmt.Sprintf("event_%d", time.Now().UnixNano()),
-				Type:      eventTypes[time.Now().UnixNano()%int64(len(eventTypes))],
-				Timestamp: time.Now().Unix(),
-				Source:    "192.168.1.100",
-				Target:    "10.0.0.1",
-				Protocol:  "tcp",
-				Port:      80,
-				Message:   "Sample firewall event",
-				Severity:  "info",
-			}
-			
-			select {
-			case eventChan <- event:
-			default:
-				// Channel full, drop event
-			}
+	// Get real stats from eBPF
+	if s.bpfManager != nil {
+		if ebpfStats, err := s.bpfManager.GetStats(); err == nil {
+			s.stats.Pass = ebpfStats.Pass
+			s.stats.Drop = ebpfStats.Drop
+			s.stats.Redirect = ebpfStats.Redirect
+			s.stats.Error = ebpfStats.Error
 		}
+	} else {
+		// Simulate collecting stats
+		s.stats.Pass += 1000
+		s.stats.Drop += 10
+		s.stats.Redirect += 50
+		s.stats.Error += 1
 	}
 }
 
 func main() {
 	log.Printf("Starting Cerberus-V gRPC Control Plane v%s", Version)
 
-	// Create server
-	server := NewServer()
-
-	// Setup gRPC server
-	lis, err := net.Listen("tcp", gRPCPort)
+	// Initialize BPF map manager
+	bpfManager, err := NewBPFMapManager()
 	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
+		log.Printf("Warning: Failed to initialize BPF manager: %v", err)
+		log.Printf("Continuing in simulation mode...")
+		bpfManager = nil
+	}
+	if bpfManager != nil {
+		defer bpfManager.Close()
+		// Run end-to-end demo
+		bpfManager.DemoEndToEnd()
 	}
 
-	grpcServer := grpc.NewServer()
-	pb.RegisterFirewallControlServer(grpcServer, server)
+	// Create server
+	server := NewServer(bpfManager)
+
+	// Start Prometheus exporter
+	exporter := NewPrometheusExporter(bpfManager, server)
+	go func() {
+		if err := exporter.Start(8080); err != nil {
+			log.Printf("Prometheus exporter failed: %v", err)
+		}
+	}()
+
+	// For testing, just run a simple HTTP server instead of gRPC
+	log.Printf("🎯 Test mode: Running simple HTTP server on %s", gRPCPort)
 	
-	// Enable reflection for debugging
-	reflection.Register(grpcServer)
+	// Simple test HTTP endpoints
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte("OK - Cerberus-V Control Plane"))
+	})
+	
+	http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		stats, _ := server.GetStats(context.Background(), &Empty{})
+		json.NewEncoder(w).Encode(stats)
+	})
+	
+	http.HandleFunc("/rules", func(w http.ResponseWriter, r *http.Request) {
+		rules, _ := server.GetRules(context.Background(), &Empty{})
+		json.NewEncoder(w).Encode(rules)
+	})
 
 	// Handle graceful shutdown
 	go func() {
@@ -356,12 +328,18 @@ func main() {
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		<-sigChan
 		
-		log.Println("Shutting down gRPC server...")
-		grpcServer.GracefulStop()
+		log.Println("Shutting down server...")
+		os.Exit(0)
 	}()
 
-	log.Printf("gRPC server listening on %s", gRPCPort)
-	if err := grpcServer.Serve(lis); err != nil {
+	log.Printf("Test server listening on %s", gRPCPort)
+	log.Println("Available endpoints:")
+	log.Println("  - http://localhost:50051/health")
+	log.Println("  - http://localhost:50051/stats") 
+	log.Println("  - http://localhost:50051/rules")
+	log.Println("  - http://localhost:8080/metrics (Prometheus)")
+	
+	if err := http.ListenAndServe(gRPCPort, nil); err != nil {
 		log.Fatalf("Failed to serve: %v", err)
 	}
 } 

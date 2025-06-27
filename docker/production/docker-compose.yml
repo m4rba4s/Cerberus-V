@@ -1,0 +1,470 @@
+# SPDX-License-Identifier: Apache-2.0
+# Cerberus-V Production Docker Compose
+# Author: funcybot@gmail.com  Date: 2025-06-27
+
+version: '3.8'
+
+services:
+  # ======================
+  # Core Cerberus Services
+  # ======================
+  
+  cerberus-ctrl:
+    image: cerberus-v/control-plane:${CERBERUS_VERSION:-1.0.0}
+    container_name: cerberus-ctrl
+    hostname: cerberus-ctrl
+    restart: unless-stopped
+    privileged: false
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    networks:
+      - cerberus-backend
+      - cerberus-api
+    ports:
+      - "${CERBERUS_GRPC_PORT:-50051}:50051"
+      - "${CERBERUS_HTTP_PORT:-50052}:50052"
+    volumes:
+      - cerberus-config:/etc/cerberus-v:ro
+      - cerberus-rules:/etc/cerberus-v/rules.d:ro
+      - cerberus-logs:/var/log/cerberus-v
+      - cerberus-data:/var/lib/cerberus-v
+      - /sys/fs/bpf:/sys/fs/bpf:shared
+    environment:
+      - CERBERUS_LOG_LEVEL=${LOG_LEVEL:-info}
+      - CERBERUS_METRICS_ENABLED=true
+      - CERBERUS_PROMETHEUS_PORT=8080
+      - CERBERUS_INTERFACE=${CERBERUS_INTERFACE:-eth0}
+      - CERBERUS_XDP_MODE=${XDP_MODE:-native}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50052/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+          cpus: '1.0'
+    labels:
+      - "cerberus.service=control-plane"
+      - "cerberus.tier=core"
+      - "traefik.enable=true"
+      - "traefik.http.routers.cerberus-api.rule=Host(`${CERBERUS_DOMAIN:-cerberus.local}`) && PathPrefix(`/api`)"
+      - "traefik.http.services.cerberus-api.loadbalancer.server.port=50052"
+
+  cerberus-dataplane:
+    image: cerberus-v/dataplane:${CERBERUS_VERSION:-1.0.0}
+    container_name: cerberus-dataplane
+    hostname: cerberus-dataplane
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    pid: host
+    volumes:
+      - cerberus-config:/etc/cerberus-v:ro
+      - cerberus-logs:/var/log/cerberus-v
+      - /sys/fs/bpf:/sys/fs/bpf:shared
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    environment:
+      - CERBERUS_CTRL_ENDPOINT=cerberus-ctrl:50051
+      - CERBERUS_INTERFACE=${CERBERUS_INTERFACE:-eth0}
+      - CERBERUS_XDP_MODE=${XDP_MODE:-native}
+      - CERBERUS_WORKERS=${DATAPLANE_WORKERS:-4}
+    depends_on:
+      cerberus-ctrl:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '4.0'
+        reservations:
+          memory: 1G
+          cpus: '2.0'
+    labels:
+      - "cerberus.service=dataplane"
+      - "cerberus.tier=core"
+
+  # ======================
+  # Web Interface
+  # ======================
+
+  cerberus-gui:
+    image: cerberus-v/gui:${CERBERUS_VERSION:-1.0.0}
+    container_name: cerberus-gui
+    hostname: cerberus-gui
+    restart: unless-stopped
+    networks:
+      - cerberus-api
+      - cerberus-frontend
+    ports:
+      - "${GUI_PORT:-3000}:3000"
+    volumes:
+      - cerberus-gui-config:/app/config:ro
+    environment:
+      - REACT_APP_API_URL=http://${CERBERUS_DOMAIN:-localhost}:${CERBERUS_HTTP_PORT:-50052}
+      - REACT_APP_WS_URL=ws://${CERBERUS_DOMAIN:-localhost}:${CERBERUS_HTTP_PORT:-50052}/ws
+      - REACT_APP_TITLE=Cerberus-V Firewall
+      - NODE_ENV=production
+    depends_on:
+      cerberus-ctrl:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+    labels:
+      - "cerberus.service=gui"
+      - "cerberus.tier=frontend"
+      - "traefik.enable=true"
+      - "traefik.http.routers.cerberus-gui.rule=Host(`${CERBERUS_DOMAIN:-cerberus.local}`)"
+      - "traefik.http.services.cerberus-gui.loadbalancer.server.port=3000"
+
+  # ======================
+  # Monitoring Stack
+  # ======================
+
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: cerberus-prometheus
+    hostname: prometheus
+    restart: unless-stopped
+    networks:
+      - cerberus-monitoring
+      - cerberus-backend
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.external-url=http://${CERBERUS_DOMAIN:-localhost}:${PROMETHEUS_PORT:-9090}'
+    depends_on:
+      - cerberus-ctrl
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    labels:
+      - "cerberus.service=prometheus"
+      - "cerberus.tier=monitoring"
+
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: cerberus-grafana
+    hostname: grafana
+    restart: unless-stopped
+    networks:
+      - cerberus-monitoring
+      - cerberus-frontend
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-cerberus123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_DOMAIN=${CERBERUS_DOMAIN:-localhost}
+      - GF_SERVER_ROOT_URL=http://${CERBERUS_DOMAIN:-localhost}:${GRAFANA_PORT:-3001}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
+    depends_on:
+      - prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+    labels:
+      - "cerberus.service=grafana"
+      - "cerberus.tier=monitoring"
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`${CERBERUS_DOMAIN:-cerberus.local}`) && PathPrefix(`/grafana`)"
+
+  # ======================
+  # Logging Stack
+  # ======================
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.8.0
+    container_name: cerberus-elasticsearch
+    hostname: elasticsearch
+    restart: unless-stopped
+    networks:
+      - cerberus-logging
+    ports:
+      - "${ELASTICSEARCH_PORT:-9200}:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xmx1g -Xms1g
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '1.0'
+    labels:
+      - "cerberus.service=elasticsearch"
+      - "cerberus.tier=logging"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.8.0
+    container_name: cerberus-kibana
+    hostname: kibana
+    restart: unless-stopped
+    networks:
+      - cerberus-logging
+      - cerberus-frontend
+    ports:
+      - "${KIBANA_PORT:-5601}:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - SERVER_BASEPATH=/kibana
+      - SERVER_REWRITEBASEPATH=true
+    depends_on:
+      - elasticsearch
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    labels:
+      - "cerberus.service=kibana"
+      - "cerberus.tier=logging"
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.8.0
+    container_name: cerberus-logstash
+    hostname: logstash
+    restart: unless-stopped
+    networks:
+      - cerberus-logging
+      - cerberus-backend
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - cerberus-logs:/var/log/cerberus-v:ro
+    environment:
+      - LS_JAVA_OPTS=-Xmx512m -Xms512m
+    depends_on:
+      - elasticsearch
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    labels:
+      - "cerberus.service=logstash"
+      - "cerberus.tier=logging"
+
+  # ======================
+  # Reverse Proxy & SSL
+  # ======================
+
+  traefik:
+    image: traefik:v3.0
+    container_name: cerberus-traefik
+    hostname: traefik
+    restart: unless-stopped
+    networks:
+      - cerberus-frontend
+      - cerberus-api
+    ports:
+      - "80:80"
+      - "443:443"
+      - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - traefik-certs:/certs
+    environment:
+      - TRAEFIK_DOMAIN=${CERBERUS_DOMAIN:-cerberus.local}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+    labels:
+      - "cerberus.service=traefik"
+      - "cerberus.tier=infrastructure"
+
+  # ======================
+  # Database & Cache
+  # ======================
+
+  redis:
+    image: redis:7.0-alpine
+    container_name: cerberus-redis
+    hostname: redis
+    restart: unless-stopped
+    networks:
+      - cerberus-backend
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+    labels:
+      - "cerberus.service=redis"
+      - "cerberus.tier=backend"
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: cerberus-postgres
+    hostname: postgres
+    restart: unless-stopped
+    networks:
+      - cerberus-backend
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-cerberus}
+      - POSTGRES_USER=${POSTGRES_USER:-cerberus}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-cerberus123}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    labels:
+      - "cerberus.service=postgres"
+      - "cerberus.tier=backend"
+
+# ======================
+# Networks
+# ======================
+
+networks:
+  cerberus-frontend:
+    name: cerberus-frontend
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.1.0/24
+
+  cerberus-api:
+    name: cerberus-api
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.2.0/24
+
+  cerberus-backend:
+    name: cerberus-backend
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.3.0/24
+
+  cerberus-monitoring:
+    name: cerberus-monitoring
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.4.0/24
+
+  cerberus-logging:
+    name: cerberus-logging
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.5.0/24
+
+# ======================
+# Volumes
+# ======================
+
+volumes:
+  # Core data
+  cerberus-config:
+    name: cerberus-config
+  cerberus-rules:
+    name: cerberus-rules
+  cerberus-logs:
+    name: cerberus-logs
+  cerberus-data:
+    name: cerberus-data
+  cerberus-gui-config:
+    name: cerberus-gui-config
+
+  # Monitoring
+  prometheus-data:
+    name: prometheus-data
+  grafana-data:
+    name: grafana-data
+
+  # Logging
+  elasticsearch-data:
+    name: elasticsearch-data
+
+  # Infrastructure
+  traefik-certs:
+    name: traefik-certs
+
+  # Backend
+  redis-data:
+    name: redis-data
+  postgres-data:
+    name: postgres-data 
