@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// VPP eBPF Firewall Dashboard - Elite Senior Edition
+// VPP eBPF Firewall Dashboard - Senior Edition
 
 import React, { useState, useEffect } from 'react';
 import {
@@ -63,7 +63,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsToolti
 import { useWebSocket } from '../contexts/WebSocketContext';
 import { firewallAPI } from '../services/api';
 
-// Elite Firewall Configuration Types
+// Firewall Configuration Types
 interface FirewallMode {
   id: string;
   name: string;
@@ -99,7 +99,7 @@ interface TrafficFilter {
   enabled: boolean;
 }
 
-// Elite Firewall Modes Configuration
+// Firewall Modes Configuration
 const FIREWALL_MODES: FirewallMode[] = [
   {
     id: 'strict',
@@ -151,7 +151,7 @@ const FIREWALL_MODES: FirewallMode[] = [
   }
 ];
 
-// Elite Configuration Panel Component
+// Configuration Panel Component
 const FirewallConfigurationPanel: React.FC = () => {
   const { data, isConnected } = useWebSocket();
   const [selectedMode, setSelectedMode] = useState<string>('balanced');
@@ -266,7 +266,7 @@ const FirewallConfigurationPanel: React.FC = () => {
   return (
     <Card>
       <CardHeader 
-        title="🎯 Elite Firewall Configuration" 
+        title="🎯 Firewall Configuration" 
         subheader="Advanced customization and rule management"
       />
       <CardContent>
@@ -574,7 +574,7 @@ const FirewallConfigurationPanel: React.FC = () => {
   );
 };
 
-// Elite Stats Card Component
+// Stats Card Component
 const StatsCard: React.FC<{
   title: string;
   value?: string | number;
@@ -610,38 +610,58 @@ const StatsCard: React.FC<{
   </Card>
 );
 
-// Firewall Status Card - Elite Edition
+// Firewall Status Card - Edition
 const FirewallStatusCard: React.FC = () => {
-  const { data, connectionState, isConnected, forceReconnect } = useWebSocket();
-
-  const isFirewallRunning = data?.data?.is_running || false;
-  const firewallUptime = data?.data?.uptime || "0:00:00";
+  const { data, isConnected, connectionState, forceReconnect } = useWebSocket();
   
-  const getFirewallStatusColor = (): 'success' | 'error' | 'default' => {
-    if (!isConnected) return 'default';
-    return isFirewallRunning ? 'success' : 'error';
+  // Extract real firewall status from WebSocket data
+  const firewallData = data?.firewall || {};
+  const engineStatus = firewallData.engine_status || 'inactive';
+  const protectionMode = firewallData.protection_mode || 'none';
+  const dualProtectionActive = firewallData.dual_protection_active || false;
+  
+  const isFirewallRunning = engineStatus === 'running';
+  const firewallUptime = data?.system?.uptime ? 
+    `${Math.floor(data.system.uptime / 3600)}h ${Math.floor((data.system.uptime % 3600) / 60)}m` : 
+    'N/A';
+
+  const getFirewallStatusColor = (): 'success' | 'error' | 'warning' | 'default' => {
+    switch (engineStatus) {
+      case 'running': return dualProtectionActive ? 'success' : 'warning';
+      case 'inactive': return 'default';
+      case 'error': return 'error';
+      default: return 'default';
+    }
   };
 
   const getFirewallStatusText = () => {
-    if (!isConnected) return 'NO CONNECTION';
-    return isFirewallRunning ? 'ONLINE' : 'OFFLINE';
+    switch (engineStatus) {
+      case 'running': 
+        return dualProtectionActive ? 'DUAL PROTECTION ACTIVE' : `${protectionMode.toUpperCase()} MODE`;
+      case 'inactive': return 'INACTIVE';
+      case 'error': return 'ERROR';
+      case 'simulation': return 'SIMULATION MODE';
+      default: return 'UNKNOWN';
+    }
   };
 
   const getWebSocketStatusColor = (): 'success' | 'warning' | 'error' | 'default' => {
     switch (connectionState) {
       case 'connected': return 'success';
-      case 'connecting':
-      case 'reconnecting': return 'warning';
-      case 'error': return 'error';
+      case 'connecting': return 'warning';
+      case 'disconnected': return 'error';
       default: return 'default';
     }
   };
 
   return (
     <Card>
-      <CardHeader title="🔥 System Status" />
+      <CardHeader 
+        title="🔥 System Status" 
+        subheader="Real-time VPP/eBPF firewall engine monitoring"
+      />
       <CardContent>
-        <Grid container spacing={2}>
+        <Grid container spacing={3}>
           <Grid item xs={12} sm={6}>
             <Typography variant="body2" color="text.secondary" gutterBottom>
               Firewall Engine
@@ -653,9 +673,19 @@ const FirewallStatusCard: React.FC = () => {
               sx={{ fontWeight: 'bold', mb: 1 }}
             />
             {isFirewallRunning && (
-              <Typography variant="body2" color="text.secondary">
-                ⏱ Uptime: {firewallUptime}
-              </Typography>
+              <Box>
+                <Typography variant="body2" color="text.secondary">
+                  ⏱ Uptime: {firewallUptime}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  🛡️ Protection: {protectionMode}
+                </Typography>
+                {dualProtectionActive && (
+                  <Typography variant="body2" color="success.main">
+                    ⚡ VPP + eBPF Dual Protection
+                  </Typography>
+                )}
+              </Box>
             )}
           </Grid>
           
@@ -683,12 +713,36 @@ const FirewallStatusCard: React.FC = () => {
             )}
           </Grid>
         </Grid>
+        
+        {/* Real-time metrics display */}
+        {isFirewallRunning && data?.firewall && (
+          <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: 'divider' }}>
+            <Grid container spacing={2}>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="caption" color="text.secondary">Packets Processed</Typography>
+                <Typography variant="h6">{(data.firewall.packets_processed || 0).toLocaleString()}</Typography>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="caption" color="text.secondary">Packets Blocked</Typography>
+                <Typography variant="h6" color="error.main">{(data.firewall.packets_blocked || 0).toLocaleString()}</Typography>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="caption" color="text.secondary">eBPF Programs</Typography>
+                <Typography variant="h6">{data.firewall.ebpf_programs || 0}</Typography>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="caption" color="text.secondary">VPP Interfaces</Typography>
+                <Typography variant="h6">{data.firewall.vpp_interfaces || 0}</Typography>
+              </Grid>
+            </Grid>
+          </Box>
+        )}
       </CardContent>
     </Card>
   );
 };
 
-// System Info Card - Elite Edition
+// System Info Card - Edition
 const SystemInfoCard: React.FC = () => {
   const { data } = useWebSocket();
   
@@ -750,7 +804,7 @@ const SystemInfoCard: React.FC = () => {
   );
 };
 
-// Network Interface Card - Elite Edition
+// Network Interface Card - Edition
 const NetworkInterfaceCard: React.FC = () => {
   const { data } = useWebSocket();
   
@@ -759,28 +813,41 @@ const NetworkInterfaceCard: React.FC = () => {
       <CardHeader title="🌐 Network Interfaces" />
       <CardContent>
         {data?.data?.interfaces && data.data.interfaces.length > 0 ? (
-          data.data.interfaces.map((iface: any, index: number) => (
-            <Box key={index} mb={2} p={2} border={1} borderColor="divider" borderRadius={1}>
-              <Box display="flex" alignItems="center" gap={1} mb={1}>
-                <WifiTwoTone color={iface.status === 'up' ? 'primary' : 'disabled'} />
-                <Typography variant="h6">{iface.name}</Typography>
-                <Chip 
-                  label={iface.status.toUpperCase()} 
-                  size="small"
-                  color={iface.status === 'up' ? 'success' : 'default'}
-                />
+          data.data.interfaces.map((iface: any, index: number) => {
+            // Map backend structure to frontend expectations
+            const status = iface.is_up ? 'up' : 'down';
+            const ipAddress = iface.addresses?.find((addr: any) => addr.type === 'IPv4')?.address || 
+                             iface.ip_address || 'N/A';
+            const macAddress = iface.mac_address || 'N/A';
+            const mtu = iface.mtu || 1500;
+            const rxPackets = iface.rx_packets || 0;
+            const txPackets = iface.tx_packets || 0;
+            const rxBytes = iface.rx_bytes || 0;
+            const txBytes = iface.tx_bytes || 0;
+            
+            return (
+              <Box key={index} mb={2} p={2} border={1} borderColor="divider" borderRadius={1}>
+                <Box display="flex" alignItems="center" gap={1} mb={1}>
+                  <WifiTwoTone color={status === 'up' ? 'primary' : 'disabled'} />
+                  <Typography variant="h6">{iface.name || `Interface ${index}`}</Typography>
+                  <Chip 
+                    label={status.toUpperCase()} 
+                    size="small"
+                    color={status === 'up' ? 'success' : 'default'}
+                  />
+                </Box>
+                <Typography variant="body2" color="text.secondary">
+                  IP: {ipAddress} | MAC: {macAddress} | MTU: {mtu}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  RX: {rxPackets.toLocaleString()} packets ({(rxBytes / 1024 / 1024).toFixed(1)} MB)
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  TX: {txPackets.toLocaleString()} packets ({(txBytes / 1024 / 1024).toFixed(1)} MB)
+                </Typography>
               </Box>
-              <Typography variant="body2" color="text.secondary">
-                IP: {iface.ip_address || 'N/A'} | MAC: {iface.mac_address} | MTU: {iface.mtu}
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                RX: {iface.rx_packets.toLocaleString()} packets ({(iface.rx_bytes / 1024 / 1024).toFixed(1)} MB)
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                TX: {iface.tx_packets.toLocaleString()} packets ({(iface.tx_bytes / 1024 / 1024).toFixed(1)} MB)
-              </Typography>
-            </Box>
-          ))
+            );
+          })
         ) : (
           <Alert severity="info">
             No interface data available
@@ -791,29 +858,43 @@ const NetworkInterfaceCard: React.FC = () => {
   );
 };
 
-// Quick Actions Panel - Elite Edition
+// Quick Actions Panel - Edition
 const QuickActionsPanel: React.FC = () => {
   const { data, isConnected } = useWebSocket();
   const [loading, setLoading] = useState<string | null>(null);
-  const [activeInterface, setActiveInterface] = useState<string>('auto');
+  const [engineStatus, setEngineStatus] = useState<string>('inactive');
 
-  const isFirewallRunning = data?.data?.is_running || false;
+  // Get real engine status from WebSocket data
+  useEffect(() => {
+    if (data?.firewall?.engine_status) {
+      setEngineStatus(data.firewall.engine_status);
+    }
+  }, [data]);
+
+  const isFirewallRunning = engineStatus === 'running';
 
   const handleStartFirewall = async () => {
     if (!isConnected) return;
     
     setLoading('start');
     try {
-      await firewallAPI.start({
-        interface: activeInterface,
-        xdp_program: 'ebpf/xdp_filter.o',
-        queue_id: 0,
-        verbose: true,
-        auto_start: false
+      const response = await fetch('/api/system/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
       });
-      console.log('✅ Firewall started successfully');
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('✅ Firewall engine started successfully:', result);
+        setEngineStatus('running');
+      } else {
+        const error = await response.json();
+        console.error('❌ Failed to start firewall engine:', error);
+      }
     } catch (error) {
-      console.error('❌ Failed to start firewall:', error);
+      console.error('❌ Network error starting firewall:', error);
     } finally {
       setLoading(null);
     }
@@ -824,10 +905,23 @@ const QuickActionsPanel: React.FC = () => {
     
     setLoading('stop');
     try {
-      await firewallAPI.stop();
-      console.log('✅ Firewall stopped successfully');
+      const response = await fetch('/api/system/stop', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('✅ Firewall engine stopped successfully:', result);
+        setEngineStatus('inactive');
+      } else {
+        const error = await response.json();
+        console.error('❌ Failed to stop firewall engine:', error);
+      }
     } catch (error) {
-      console.error('❌ Failed to stop firewall:', error);
+      console.error('❌ Network error stopping firewall:', error);
     } finally {
       setLoading(null);
     }
@@ -838,12 +932,50 @@ const QuickActionsPanel: React.FC = () => {
     
     setLoading('restart');
     try {
-      await firewallAPI.restart();
-      console.log('✅ Firewall restarted successfully');
+      // Stop first
+      await fetch('/api/system/stop', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      // Wait a moment
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Start again
+      const response = await fetch('/api/system/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('✅ Firewall engine restarted successfully:', result);
+        setEngineStatus('running');
+      } else {
+        const error = await response.json();
+        console.error('❌ Failed to restart firewall engine:', error);
+      }
     } catch (error) {
-      console.error('❌ Failed to restart firewall:', error);
+      console.error('❌ Network error restarting firewall:', error);
     } finally {
       setLoading(null);
+    }
+  };
+
+  const handleShowSystemStatus = async () => {
+    try {
+      const response = await fetch('/api/system/status');
+      if (response.ok) {
+        const status = await response.json();
+        console.log('🔍 System Status:', status);
+        alert(`System Status:\nEngine: ${status.engine_status}\nProtection Mode: ${status.protection_mode}\nDemo Mode: ${status.demo_mode}`);
+      }
+    } catch (error) {
+      console.error('❌ Error getting system status:', error);
     }
   };
 
@@ -858,7 +990,7 @@ const QuickActionsPanel: React.FC = () => {
           onClick={handleStartFirewall}
           startIcon={loading === 'start' ? <Speed /> : <CheckCircle />}
         >
-          {loading === 'start' ? 'Starting...' : 'Start Firewall'}
+          {loading === 'start' ? 'Starting Engine...' : 'Start Firewall Engine'}
         </Button>
       </Grid>
       <Grid item xs={12} sm={6}>
@@ -870,7 +1002,7 @@ const QuickActionsPanel: React.FC = () => {
           onClick={handleStopFirewall}
           startIcon={loading === 'stop' ? <Speed /> : <Block />}
         >
-          {loading === 'stop' ? 'Stopping...' : 'Stop Firewall'}
+          {loading === 'stop' ? 'Stopping Engine...' : 'Stop Firewall Engine'}
         </Button>
       </Grid>
       <Grid item xs={12} sm={6}>
@@ -882,7 +1014,7 @@ const QuickActionsPanel: React.FC = () => {
           onClick={handleRestartFirewall}
           startIcon={loading === 'restart' ? <Speed /> : <Security />}
         >
-          {loading === 'restart' ? 'Restarting...' : 'Restart Firewall'}
+          {loading === 'restart' ? 'Restarting...' : 'Restart Engine'}
         </Button>
       </Grid>
       <Grid item xs={12} sm={6}>
@@ -890,51 +1022,59 @@ const QuickActionsPanel: React.FC = () => {
           variant="outlined" 
           fullWidth
           disabled={!isConnected}
-          onClick={() => window.open('/api/docs', '_blank')}
+          onClick={handleShowSystemStatus}
           startIcon={<Computer />}
         >
-          API Docs
+          System Status
         </Button>
       </Grid>
     </Grid>
   );
 };
 
-// Elite Dashboard Component
+// Dashboard Component
 const Dashboard: React.FC = () => {
   const { data, isConnected } = useWebSocket();
   const [chartData, setChartData] = useState<any[]>([]);
 
-  // Elite data extraction with proper typing
-  const firewallStats = data?.data?.firewall_stats as any || {};
-  const packetsDropped = (firewallStats.packets_dropped as number) || 0;
-  const packetsPassed = (firewallStats.packets_passed as number) || 0;
-  const packetsTotal = packetsDropped + packetsPassed;
-  const ppsCurrently = (firewallStats.pps_current as number) || 0;
-  const cpuUsage = (firewallStats.cpu_usage as number) || 0;
-  const memoryUsage = (firewallStats.memory_usage as number) || 0;
+  // Extract real firewall data from WebSocket
+  const firewallData = data?.firewall || {};
+  const systemData = data?.system || {};
+  
+  // Real firewall statistics
+  const packetsProcessed = firewallData.packets_processed || 0;
+  const packetsBlocked = firewallData.packets_blocked || 0; 
+  const packetsReceived = firewallData.packets_received || 0;
+  const packetsTotal = packetsProcessed + packetsBlocked;
+  const ppsCurrently = Math.floor(packetsProcessed / 60); // Approximate PPS
+  
+  // System metrics
+  const cpuUsage = systemData.cpu_usage || 0;
+  const memoryUsage = systemData.memory_used || 0;
+  const memoryTotal = systemData.memory_total || 0;
+  const memoryPercent = memoryTotal > 0 ? (memoryUsage / memoryTotal) * 100 : 0;
 
-  // Elite pie chart data
+  // pie chart data
   const pieData = [
     {
       name: 'Blocked',
-      value: packetsDropped,
+      value: packetsBlocked,
       color: '#f44336'
     },
     {
       name: 'Allowed', 
-      value: packetsPassed,
+      value: packetsProcessed,
       color: '#4caf50'
     }
   ];
 
-  // Elite chart updates
+  // chart updates
   useEffect(() => {
-    if (data?.data?.firewall_stats) {
+    if (data?.firewall) {
       const newDataPoint = {
         time: new Date().toLocaleTimeString(),
-        blocked: packetsDropped,
-        allowed: packetsPassed,
+        blocked: packetsBlocked,
+        allowed: packetsProcessed,
         pps: ppsCurrently,
       };
 
@@ -943,7 +1083,7 @@ const Dashboard: React.FC = () => {
         return updated.slice(-20); // Keep last 20 points
       });
     }
-  }, [data, packetsDropped, packetsPassed, ppsCurrently]);
+  }, [data, packetsBlocked, packetsProcessed, ppsCurrently]);
 
   return (
     <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
@@ -951,7 +1091,7 @@ const Dashboard: React.FC = () => {
         🔥 VPP eBPF Firewall Dashboard
       </Typography>
 
-      {/* Elite Connection Status */}
+      {/* Connection Status */}
       {!isConnected && (
         <Alert severity="warning" sx={{ mb: 3 }}>
           <strong>WebSocket Disconnected</strong> - Real-time updates unavailable
@@ -959,16 +1099,16 @@ const Dashboard: React.FC = () => {
       )}
 
       <Grid container spacing={3}>
-        {/* Elite Status Overview */}
+        {/* Status Overview */}
         <Grid item xs={12}>
           <FirewallStatusCard />
         </Grid>
 
-        {/* Elite Metrics Row */}
+        {/* Metrics Row */}
         <Grid item xs={12} sm={6} md={3}>
           <StatsCard
             title="Blocked Packets"
-            value={packetsDropped}
+            value={packetsBlocked.toLocaleString()}
             icon={<Block />}
             color="error"
           />
@@ -976,8 +1116,8 @@ const Dashboard: React.FC = () => {
 
         <Grid item xs={12} sm={6} md={3}>
           <StatsCard
-            title="Allowed Packets"
-            value={packetsPassed}
+            title="Processed Packets"
+            value={packetsProcessed.toLocaleString()}
             icon={<CheckCircle />}
             color="success"
           />
@@ -986,7 +1126,7 @@ const Dashboard: React.FC = () => {
         <Grid item xs={12} sm={6} md={3}>
           <StatsCard
             title="Total Packets"
-            value={packetsTotal}
+            value={packetsTotal.toLocaleString()}
             icon={<NetworkCheck />}
             color="info"
           />
@@ -1002,27 +1142,27 @@ const Dashboard: React.FC = () => {
           />
         </Grid>
 
-        {/* Elite Network Interface */}
+        {/* Network Interface */}
         <Grid item xs={12}>
           <NetworkInterfaceCard />
         </Grid>
 
-        {/* Elite System Info */}
+        {/* System Info */}
         <Grid item xs={12}>
           <SystemInfoCard />
         </Grid>
 
-        {/* Elite Firewall Configuration */}
+        {/* Firewall Configuration */}
         <Grid item xs={12}>
           <FirewallConfigurationPanel />
         </Grid>
 
-        {/* Elite Charts */}
+        {/* Charts */}
         <Grid item xs={12} md={8}>
           <Card>
             <CardHeader 
               title="📈 Packet Flow (Real-time)"
-              subheader="Live traffic monitoring"
+              subheader="Live VPP/eBPF traffic monitoring"
             />
             <CardContent>
               <ResponsiveContainer width="100%" height={300}>
@@ -1053,7 +1193,7 @@ const Dashboard: React.FC = () => {
                     dataKey="allowed" 
                     stroke="#4caf50" 
                     strokeWidth={2}
-                    name="Allowed"
+                    name="Processed"
                   />
                 </LineChart>
               </ResponsiveContainer>
@@ -1065,7 +1205,7 @@ const Dashboard: React.FC = () => {
           <Card>
             <CardHeader 
               title="📊 Packet Distribution"
-              subheader="Current session totals"
+              subheader="VPP/eBPF processing results"
             />
             <CardContent>
               <ResponsiveContainer width="100%" height={300}>
@@ -1097,10 +1237,10 @@ const Dashboard: React.FC = () => {
           </Card>
         </Grid>
 
-        {/* Elite Performance Metrics */}
+        {/* Performance Metrics */}
         <Grid item xs={12} md={6}>
           <Card>
-            <CardHeader title="⚡ Performance Metrics" />
+            <CardHeader title="⚡ System Performance" />
             <CardContent>
               <Box mb={3}>
                 <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
@@ -1120,13 +1260,13 @@ const Dashboard: React.FC = () => {
                 <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
                   <Typography variant="body2">Memory Usage</Typography>
                   <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
-                    {(memoryUsage / 1024 / 1024).toFixed(1)} MB
+                    {(memoryUsage / 1024 / 1024 / 1024).toFixed(1)} GB ({memoryPercent.toFixed(1)}%)
                   </Typography>
                 </Box>
                 <LinearProgress 
                   variant="determinate" 
-                  value={Math.min((memoryUsage / 1024 / 1024 / 1024) * 100, 100)} 
-                  color="info"
+                  value={Math.min(memoryPercent, 100)} 
+                  color={memoryPercent > 80 ? 'error' : memoryPercent > 60 ? 'warning' : 'info'}
                 />
               </Box>
             </CardContent>

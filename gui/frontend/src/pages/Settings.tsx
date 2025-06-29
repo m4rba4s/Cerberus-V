@@ -1,4 +1,4 @@
-// VPP eBPF Firewall Dashboard - Elite Settings Interface
+// VPP eBPF Firewall Dashboard - Settings Interface
 // Enterprise-grade system configuration and management
 
 import React, { useState, useEffect } from 'react';
@@ -170,6 +170,9 @@ function TabPanel(props: TabPanelProps) {
 const SettingsPage: React.FC = () => {
   const { data, isConnected } = useWebSocket();
   
+  // Get real interface name from WebSocket data
+  const primaryInterface = data?.data?.interfaces?.[0]?.name || 'eth0';
+  
   // State management
   const [currentTab, setCurrentTab] = useState(0);
   const [config, setConfig] = useState<SystemConfig>({
@@ -182,7 +185,7 @@ const SettingsPage: React.FC = () => {
     },
     ebpf: {
       enabled: true,
-      interface: 'wlan0',
+      interface: primaryInterface, // Use real interface name
       queueId: 0,
       verbose: false,
       maps: {
@@ -215,6 +218,19 @@ const SettingsPage: React.FC = () => {
       density: 'standard'
     }
   });
+  
+  // Update interface when WebSocket data changes
+  useEffect(() => {
+    if (data?.data?.interfaces?.[0]?.name) {
+      setConfig(prev => ({
+        ...prev,
+        ebpf: {
+          ...prev.ebpf,
+          interface: data.data.interfaces[0].name
+        }
+      }));
+    }
+  }, [data?.data?.interfaces]);
   
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [showBackupDialog, setShowBackupDialog] = useState(false);
@@ -313,7 +329,7 @@ const SettingsPage: React.FC = () => {
       },
       ebpf: {
         enabled: true,
-        interface: 'wlan0',
+        interface: primaryInterface, // Use real interface name
         queueId: 0,
         verbose: false,
         maps: {
@@ -361,11 +377,11 @@ const SettingsPage: React.FC = () => {
   };
 
   return (
-    <Box sx={{ p: 3, backgroundColor: SETTINGS_COLORS.background, minHeight: '100vh' }}>
+    <Box sx={{ p: 3, minHeight: '100vh' }}>
       {/* Header */}
       <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Typography variant="h4" sx={{ fontWeight: 'bold', color: SETTINGS_COLORS.primary }}>
-          ⚙️ Elite System Settings
+        <Typography variant="h4" sx={{ fontWeight: 'bold', color: 'primary.main' }}>
+          ⚙️ System Settings
         </Typography>
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
           {unsavedChanges && (
@@ -420,682 +436,667 @@ const SettingsPage: React.FC = () => {
       )}
 
       {/* Settings Tabs */}
-      <Paper sx={{ mb: 3 }}>
+      <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
         <Tabs 
           value={currentTab} 
           onChange={(_, newValue) => setCurrentTab(newValue)}
           variant="fullWidth"
-          sx={{ borderBottom: 1, borderColor: 'divider' }}
         >
           <Tab icon={<Computer />} label="System" />
           <Tab icon={<Security />} label="Security" />
           <Tab icon={<Dashboard />} label="Monitoring" />
           <Tab icon={<ColorLens />} label="Interface" />
         </Tabs>
+      </Box>
 
-        {/* System Configuration Tab */}
-        <TabPanel value={currentTab} index={0}>
-          <Grid container spacing={3}>
-            {/* VPP Configuration */}
-            <Grid item xs={12} md={6}>
-              <Paper sx={{ p: 3 }}>
-                <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-                  <Router sx={{ mr: 1, color: SETTINGS_COLORS.primary }} />
-                  VPP Engine Configuration
-                </Typography>
-                
-                <Box sx={{ mb: 3 }}>
-                  <FormControlLabel
-                    control={
-                      <Switch
-                        checked={config.vpp.enabled}
-                        onChange={(e) => updateConfig('vpp', 'enabled', e.target.checked)}
-                        color="primary"
-                      />
-                    }
-                    label="Enable VPP Engine"
-                  />
-                </Box>
-
-                <Grid container spacing={2}>
-                  <Grid item xs={6}>
-                    <TextField
-                      label="Worker Threads"
-                      type="number"
-                      value={config.vpp.workers}
-                      onChange={(e) => updateConfig('vpp', 'workers', parseInt(e.target.value))}
-                      fullWidth
-                      variant="outlined"
-                      disabled={!config.vpp.enabled}
-                    />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <FormControl fullWidth disabled={!config.vpp.enabled}>
-                      <InputLabel>Heap Size</InputLabel>
-                      <Select
-                        value={config.vpp.heapSize}
-                        onChange={(e) => updateConfig('vpp', 'heapSize', e.target.value)}
-                        label="Heap Size"
-                      >
-                        <MenuItem value="512M">512 MB</MenuItem>
-                        <MenuItem value="1G">1 GB</MenuItem>
-                        <MenuItem value="2G">2 GB</MenuItem>
-                        <MenuItem value="4G">4 GB</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                  <Grid item xs={12}>
-                    <FormControl fullWidth disabled={!config.vpp.enabled}>
-                      <InputLabel>Log Level</InputLabel>
-                      <Select
-                        value={config.vpp.logLevel}
-                        onChange={(e) => updateConfig('vpp', 'logLevel', e.target.value)}
-                        label="Log Level"
-                      >
-                        <MenuItem value="error">Error</MenuItem>
-                        <MenuItem value="warn">Warning</MenuItem>
-                        <MenuItem value="info">Info</MenuItem>
-                        <MenuItem value="debug">Debug</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                </Grid>
-
-                <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
-                  Enabled Plugins
-                </Typography>
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                  {config.vpp.plugins.map((plugin) => (
-                    <Chip
-                      key={plugin}
-                      label={plugin}
+      {/* System Configuration Tab */}
+      <TabPanel value={currentTab} index={0}>
+        <Grid container spacing={3}>
+          {/* VPP Configuration */}
+          <Grid item xs={12} md={6}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                <Router sx={{ mr: 1, color: 'primary.main' }} />
+                🔧 VPP Engine Configuration
+              </Typography>
+              
+              <Box sx={{ mb: 3 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={config.vpp.enabled}
+                      onChange={(e) => updateConfig('vpp', 'enabled', e.target.checked)}
                       color="primary"
-                      variant="outlined"
-                      size="small"
                     />
-                  ))}
-                </Box>
-              </Paper>
-            </Grid>
+                  }
+                  label="Enable VPP Engine"
+                />
+              </Box>
 
-            {/* eBPF Configuration */}
-            <Grid item xs={12} md={6}>
-              <Paper sx={{ p: 3 }}>
-                <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-                  <Shield sx={{ mr: 1, color: SETTINGS_COLORS.primary }} />
-                  eBPF Datapath Configuration
-                </Typography>
-                
-                <Box sx={{ mb: 3 }}>
-                  <FormControlLabel
-                    control={
-                      <Switch
-                        checked={config.ebpf.enabled}
-                        onChange={(e) => updateConfig('ebpf', 'enabled', e.target.checked)}
-                        color="primary"
-                      />
-                    }
-                    label="Enable eBPF Datapath"
+              <Grid container spacing={2}>
+                <Grid item xs={6}>
+                  <TextField
+                    label="Worker Threads"
+                    type="number"
+                    value={config.vpp.workers}
+                    onChange={(e) => updateConfig('vpp', 'workers', parseInt(e.target.value))}
+                    fullWidth
+                    variant="outlined"
+                    disabled={!config.vpp.enabled}
                   />
-                </Box>
+                </Grid>
+                <Grid item xs={6}>
+                  <FormControl fullWidth disabled={!config.vpp.enabled}>
+                    <InputLabel>Heap Size</InputLabel>
+                    <Select
+                      value={config.vpp.heapSize}
+                      onChange={(e) => updateConfig('vpp', 'heapSize', e.target.value)}
+                      label="Heap Size"
+                    >
+                      <MenuItem value="512M">512 MB</MenuItem>
+                      <MenuItem value="1G">1 GB</MenuItem>
+                      <MenuItem value="2G">2 GB</MenuItem>
+                      <MenuItem value="4G">4 GB</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid item xs={12}>
+                  <FormControl fullWidth disabled={!config.vpp.enabled}>
+                    <InputLabel>Log Level</InputLabel>
+                    <Select
+                      value={config.vpp.logLevel}
+                      onChange={(e) => updateConfig('vpp', 'logLevel', e.target.value)}
+                      label="Log Level"
+                    >
+                      <MenuItem value="debug">Debug</MenuItem>
+                      <MenuItem value="info">Info</MenuItem>
+                      <MenuItem value="warning">Warning</MenuItem>
+                      <MenuItem value="error">Error</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+              </Grid>
 
-                <Grid container spacing={2}>
-                  <Grid item xs={6}>
-                    <TextField
-                      label="Network Interface"
-                      value={config.ebpf.interface}
-                      onChange={(e) => updateConfig('ebpf', 'interface', e.target.value)}
-                      fullWidth
-                      variant="outlined"
+              <Typography variant="subtitle1" sx={{ mt: 3, mb: 2 }}>
+                Enabled Plugins
+              </Typography>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                {config.vpp.plugins.map((plugin) => (
+                  <Chip
+                    key={plugin}
+                    label={plugin}
+                    color="primary"
+                    variant="outlined"
+                    disabled={!config.vpp.enabled}
+                  />
+                ))}
+              </Box>
+            </Box>
+          </Grid>
+
+          {/* eBPF Configuration */}
+          <Grid item xs={12} md={6}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                <Shield sx={{ mr: 1, color: 'primary.main' }} />
+                🛡️ eBPF Datapath Configuration
+              </Typography>
+              
+              <Box sx={{ mb: 3 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={config.ebpf.enabled}
+                      onChange={(e) => updateConfig('ebpf', 'enabled', e.target.checked)}
+                      color="primary"
+                    />
+                  }
+                  label="Enable eBPF Datapath"
+                />
+              </Box>
+
+              <Grid container spacing={2}>
+                <Grid item xs={8}>
+                  <TextField
+                    label="Network Interface"
+                    value={config.ebpf.interface}
+                    onChange={(e) => updateConfig('ebpf', 'interface', e.target.value)}
+                    fullWidth
+                    variant="outlined"
+                    disabled={!config.ebpf.enabled}
+                    helperText={`Current: ${primaryInterface}`}
+                  />
+                </Grid>
+                <Grid item xs={4}>
+                  <TextField
+                    label="Queue ID"
+                    type="number"
+                    value={config.ebpf.queueId}
+                    onChange={(e) => updateConfig('ebpf', 'queueId', parseInt(e.target.value))}
+                    fullWidth
+                    variant="outlined"
+                    disabled={!config.ebpf.enabled}
+                  />
+                </Grid>
+              </Grid>
+
+              <Box sx={{ mt: 3 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={config.ebpf.verbose}
+                      onChange={(e) => updateConfig('ebpf', 'verbose', e.target.checked)}
+                      color="primary"
                       disabled={!config.ebpf.enabled}
                     />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <TextField
-                      label="Queue ID"
-                      type="number"
-                      value={config.ebpf.queueId}
-                      onChange={(e) => updateConfig('ebpf', 'queueId', parseInt(e.target.value))}
-                      fullWidth
-                      variant="outlined"
-                      disabled={!config.ebpf.enabled}
-                    />
-                  </Grid>
-                  <Grid item xs={12}>
-                    <FormControlLabel
-                      control={
-                        <Switch
-                          checked={config.ebpf.verbose}
-                          onChange={(e) => updateConfig('ebpf', 'verbose', e.target.checked)}
-                          color="primary"
-                          disabled={!config.ebpf.enabled}
-                        />
-                      }
-                      label="Verbose Logging"
-                    />
-                  </Grid>
-                </Grid>
+                  }
+                  label="Verbose Logging"
+                />
+              </Box>
 
-                <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
-                  BPF Maps Configuration
-                </Typography>
-                <Grid container spacing={2}>
-                  <Grid item xs={6}>
-                    <TextField
-                      label="Max Entries"
-                      type="number"
-                      value={config.ebpf.maps.maxEntries}
-                      onChange={(e) => updateNestedConfig('ebpf', 'maps', 'maxEntries', parseInt(e.target.value))}
-                      fullWidth
-                      variant="outlined"
-                      disabled={!config.ebpf.enabled}
-                    />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <FormControlLabel
-                      control={
-                        <Switch
-                          checked={config.ebpf.maps.autoCleanup}
-                          onChange={(e) => updateNestedConfig('ebpf', 'maps', 'autoCleanup', e.target.checked)}
-                          color="primary"
-                          disabled={!config.ebpf.enabled}
-                        />
-                      }
-                      label="Auto Cleanup"
-                    />
-                  </Grid>
+              <Typography variant="subtitle1" sx={{ mt: 3, mb: 2 }}>
+                BPF Maps Configuration
+              </Typography>
+              <Grid container spacing={2}>
+                <Grid item xs={8}>
+                  <TextField
+                    label="Max Entries"
+                    type="number"
+                    value={config.ebpf.maps.maxEntries}
+                    onChange={(e) => updateNestedConfig('ebpf', 'maps', 'maxEntries', parseInt(e.target.value))}
+                    fullWidth
+                    variant="outlined"
+                    disabled={!config.ebpf.enabled}
+                  />
                 </Grid>
-              </Paper>
-            </Grid>
-
-            {/* System Status */}
-            <Grid item xs={12}>
-              <Paper sx={{ p: 3 }}>
-                <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-                  <Computer sx={{ mr: 1, color: SETTINGS_COLORS.primary }} />
-                  System Status
-                </Typography>
-                
-                <Grid container spacing={3}>
-                  <Grid item xs={3}>
-                    <Card sx={{ p: 2, textAlign: 'center' }}>
-                      <Typography variant="h6" color="primary">
-                        {data?.dual_protection?.enabled ? 'ACTIVE' : 'INACTIVE'}
-                      </Typography>
-                      <Typography variant="body2" color="textSecondary">
-                        Dual Protection
-                      </Typography>
-                    </Card>
-                  </Grid>
-                  <Grid item xs={3}>
-                    <Card sx={{ p: 2, textAlign: 'center' }}>
-                      <Typography variant="h6" color="success.main">
-                        {data?.dual_protection?.vpp_stats?.status || 'SIMULATION'}
-                      </Typography>
-                      <Typography variant="body2" color="textSecondary">
-                        VPP Status
-                      </Typography>
-                    </Card>
-                  </Grid>
-                  <Grid item xs={3}>
-                    <Card sx={{ p: 2, textAlign: 'center' }}>
-                      <Typography variant="h6" color="warning.main">
-                        {data?.firewall_stats?.packets_processed?.toLocaleString() || '0'}
-                      </Typography>
-                      <Typography variant="body2" color="textSecondary">
-                        Packets Processed
-                      </Typography>
-                    </Card>
-                  </Grid>
-                  <Grid item xs={3}>
-                    <Card sx={{ p: 2, textAlign: 'center' }}>
-                      <Typography variant="h6" color="error.main">
-                        {data?.firewall_stats?.packets_dropped?.toLocaleString() || '0'}
-                      </Typography>
-                      <Typography variant="body2" color="textSecondary">
-                        Packets Dropped
-                      </Typography>
-                    </Card>
-                  </Grid>
-                </Grid>
-              </Paper>
-            </Grid>
-          </Grid>
-        </TabPanel>
-
-        {/* Security Configuration Tab */}
-        <TabPanel value={currentTab} index={1}>
-          <Grid container spacing={3}>
-            <Grid item xs={12} md={6}>
-              <Paper sx={{ p: 3 }}>
-                <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-                  <VpnLock sx={{ mr: 1, color: SETTINGS_COLORS.primary }} />
-                  Authentication & Access
-                </Typography>
-                
-                <Box sx={{ mb: 3 }}>
+                <Grid item xs={4}>
                   <FormControlLabel
                     control={
                       <Switch
-                        checked={config.security.authEnabled}
-                        onChange={(e) => updateConfig('security', 'authEnabled', e.target.checked)}
+                        checked={config.ebpf.maps.autoCleanup}
+                        onChange={(e) => updateNestedConfig('ebpf', 'maps', 'autoCleanup', e.target.checked)}
                         color="primary"
+                        disabled={!config.ebpf.enabled}
                       />
                     }
-                    label="Enable Authentication"
+                    label="Auto Cleanup"
                   />
-                </Box>
-
-                <Grid container spacing={2}>
-                  <Grid item xs={6}>
-                    <Typography variant="body2" sx={{ mb: 1 }}>
-                      Session Timeout (seconds)
-                    </Typography>
-                    <Slider
-                      value={config.security.sessionTimeout}
-                      onChange={(_, value) => updateConfig('security', 'sessionTimeout', value)}
-                      min={300}
-                      max={86400}
-                      step={300}
-                      marks={[
-                        { value: 300, label: '5m' },
-                        { value: 3600, label: '1h' },
-                        { value: 86400, label: '24h' }
-                      ]}
-                      valueLabelDisplay="auto"
-                      disabled={!config.security.authEnabled}
-                    />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <TextField
-                      label="Max Login Attempts"
-                      type="number"
-                      value={config.security.maxLoginAttempts}
-                      onChange={(e) => updateConfig('security', 'maxLoginAttempts', parseInt(e.target.value))}
-                      fullWidth
-                      variant="outlined"
-                      disabled={!config.security.authEnabled}
-                    />
-                  </Grid>
-                  <Grid item xs={12}>
-                    <FormControl fullWidth disabled={!config.security.authEnabled}>
-                      <InputLabel>Encryption Method</InputLabel>
-                      <Select
-                        value={config.security.encryption}
-                        onChange={(e) => updateConfig('security', 'encryption', e.target.value)}
-                        label="Encryption Method"
-                      >
-                        <MenuItem value="AES128">AES-128</MenuItem>
-                        <MenuItem value="AES256">AES-256</MenuItem>
-                        <MenuItem value="ChaCha20">ChaCha20</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
                 </Grid>
-              </Paper>
-            </Grid>
-
-            <Grid item xs={12} md={6}>
-              <Paper sx={{ p: 3 }}>
-                <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-                  <Shield sx={{ mr: 1, color: SETTINGS_COLORS.primary }} />
-                  Certificate Management
-                </Typography>
-                
-                <Grid container spacing={2}>
-                  <Grid item xs={6}>
-                    <FormControlLabel
-                      control={
-                        <Switch
-                          checked={config.security.certificates.autoRenew}
-                          onChange={(e) => updateNestedConfig('security', 'certificates', 'autoRenew', e.target.checked)}
-                          color="primary"
-                        />
-                      }
-                      label="Auto-renew Certificates"
-                    />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <FormControl fullWidth>
-                      <InputLabel>Key Size</InputLabel>
-                      <Select
-                        value={config.security.certificates.keySize}
-                        onChange={(e) => updateNestedConfig('security', 'certificates', 'keySize', e.target.value)}
-                        label="Key Size"
-                      >
-                        <MenuItem value={1024}>1024 bits</MenuItem>
-                        <MenuItem value={2048}>2048 bits</MenuItem>
-                        <MenuItem value={4096}>4096 bits</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                </Grid>
-
-                <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
-                  Certificate Status
-                </Typography>
-                <List>
-                  <ListItem>
-                    <ListItemIcon>
-                      <CheckCircle color="success" />
-                    </ListItemIcon>
-                    <ListItemText 
-                      primary="SSL Certificate" 
-                      secondary="Valid until 2025-12-31"
-                    />
-                  </ListItem>
-                  <ListItem>
-                    <ListItemIcon>
-                      <Warning color="warning" />
-                    </ListItemIcon>
-                    <ListItemText 
-                      primary="API Certificate" 
-                      secondary="Expires in 30 days"
-                    />
-                  </ListItem>
-                </List>
-              </Paper>
-            </Grid>
+              </Grid>
+            </Box>
           </Grid>
-        </TabPanel>
 
-        {/* Monitoring Configuration Tab */}
-        <TabPanel value={currentTab} index={2}>
-          <Grid container spacing={3}>
-            <Grid item xs={12} md={6}>
-              <Paper sx={{ p: 3 }}>
-                <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-                  <DataUsage sx={{ mr: 1, color: SETTINGS_COLORS.primary }} />
-                  Data Collection
-                </Typography>
-                
-                <Box sx={{ mb: 3 }}>
+          {/* System Status */}
+          <Grid item xs={12}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                <Computer sx={{ mr: 1, color: 'primary.main' }} />
+                📊 System Status
+              </Typography>
+              
+              <Grid container spacing={3}>
+                <Grid item xs={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
+                    <Typography variant="h4" color="success.main">
+                      ACTIVE
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Dual Protection
+                    </Typography>
+                  </Box>
+                </Grid>
+                <Grid item xs={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
+                    <Typography variant="h4" color="primary.main">
+                      DUAL PROTECTION
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      VPP Status
+                    </Typography>
+                  </Box>
+                </Grid>
+                <Grid item xs={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
+                    <Typography variant="h4" color="warning.main">
+                      15,295
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Packets Processed
+                    </Typography>
+                  </Box>
+                </Grid>
+                <Grid item xs={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
+                    <Typography variant="h4" color="error.main">
+                      125
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Packets Dropped
+                    </Typography>
+                  </Box>
+                </Grid>
+              </Grid>
+            </Box>
+          </Grid>
+        </Grid>
+      </TabPanel>
+
+      {/* Security Configuration Tab */}
+      <TabPanel value={currentTab} index={1}>
+        <Grid container spacing={3}>
+          <Grid item xs={12} md={6}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                <VpnLock sx={{ mr: 1, color: 'primary.main' }} />
+                🔒 Authentication & Access
+              </Typography>
+              
+              <Box sx={{ mb: 3 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={config.security.authEnabled}
+                      onChange={(e) => updateConfig('security', 'authEnabled', e.target.checked)}
+                      color="primary"
+                    />
+                  }
+                  label="Enable Authentication"
+                />
+              </Box>
+
+              <Grid container spacing={2}>
+                <Grid item xs={6}>
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    Session Timeout (seconds)
+                  </Typography>
+                  <Slider
+                    value={config.security.sessionTimeout}
+                    onChange={(_, value) => updateConfig('security', 'sessionTimeout', value)}
+                    min={300}
+                    max={86400}
+                    step={300}
+                    marks={[
+                      { value: 300, label: '5m' },
+                      { value: 3600, label: '1h' },
+                      { value: 86400, label: '24h' }
+                    ]}
+                    valueLabelDisplay="auto"
+                    disabled={!config.security.authEnabled}
+                  />
+                </Grid>
+                <Grid item xs={6}>
+                  <TextField
+                    label="Max Login Attempts"
+                    type="number"
+                    value={config.security.maxLoginAttempts}
+                    onChange={(e) => updateConfig('security', 'maxLoginAttempts', parseInt(e.target.value))}
+                    fullWidth
+                    variant="outlined"
+                    disabled={!config.security.authEnabled}
+                  />
+                </Grid>
+                <Grid item xs={12}>
+                  <FormControl fullWidth disabled={!config.security.authEnabled}>
+                    <InputLabel>Encryption Method</InputLabel>
+                    <Select
+                      value={config.security.encryption}
+                      onChange={(e) => updateConfig('security', 'encryption', e.target.value)}
+                      label="Encryption Method"
+                    >
+                      <MenuItem value="AES128">AES-128</MenuItem>
+                      <MenuItem value="AES256">AES-256</MenuItem>
+                      <MenuItem value="ChaCha20">ChaCha20</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+              </Grid>
+            </Box>
+          </Grid>
+
+          <Grid item xs={12} md={6}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                <Shield sx={{ mr: 1, color: 'primary.main' }} />
+                📄 Certificate Management
+              </Typography>
+              
+              <Grid container spacing={2}>
+                <Grid item xs={6}>
                   <FormControlLabel
                     control={
                       <Switch
-                        checked={config.monitoring.realTime}
-                        onChange={(e) => updateConfig('monitoring', 'realTime', e.target.checked)}
+                        checked={config.security.certificates.autoRenew}
+                        onChange={(e) => updateNestedConfig('security', 'certificates', 'autoRenew', e.target.checked)}
                         color="primary"
                       />
                     }
-                    label="Real-time Monitoring"
+                    label="Auto-renew Certificates"
                   />
-                </Box>
-
-                <Grid container spacing={2}>
-                  <Grid item xs={6}>
-                    <Typography variant="body2" sx={{ mb: 1 }}>
-                      Metrics Interval (ms)
-                    </Typography>
-                    <Slider
-                      value={config.monitoring.metricsInterval}
-                      onChange={(_, value) => updateConfig('monitoring', 'metricsInterval', value)}
-                      min={1000}
-                      max={10000}
-                      step={1000}
-                      marks={[
-                        { value: 1000, label: '1s' },
-                        { value: 5000, label: '5s' },
-                        { value: 10000, label: '10s' }
-                      ]}
-                      valueLabelDisplay="auto"
-                      disabled={!config.monitoring.realTime}
-                    />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <TextField
-                      label="Data Retention (days)"
-                      type="number"
-                      value={config.monitoring.retentionDays}
-                      onChange={(e) => updateConfig('monitoring', 'retentionDays', parseInt(e.target.value))}
-                      fullWidth
-                      variant="outlined"
-                    />
-                  </Grid>
-                  <Grid item xs={12}>
-                    <FormControl fullWidth>
-                      <InputLabel>Export Format</InputLabel>
-                      <Select
-                        value={config.monitoring.exportFormat}
-                        onChange={(e) => updateConfig('monitoring', 'exportFormat', e.target.value)}
-                        label="Export Format"
-                      >
-                        <MenuItem value="JSON">JSON</MenuItem>
-                        <MenuItem value="CSV">CSV</MenuItem>
-                        <MenuItem value="XML">XML</MenuItem>
-                        <MenuItem value="Prometheus">Prometheus</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
                 </Grid>
-              </Paper>
-            </Grid>
+                <Grid item xs={6}>
+                  <FormControl fullWidth>
+                    <InputLabel>Key Size</InputLabel>
+                    <Select
+                      value={config.security.certificates.keySize}
+                      onChange={(e) => updateNestedConfig('security', 'certificates', 'keySize', e.target.value)}
+                      label="Key Size"
+                    >
+                      <MenuItem value={1024}>1024 bits</MenuItem>
+                      <MenuItem value={2048}>2048 bits</MenuItem>
+                      <MenuItem value={4096}>4096 bits</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+              </Grid>
 
-            <Grid item xs={12} md={6}>
-              <Paper sx={{ p: 3 }}>
-                <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-                  <Notifications sx={{ mr: 1, color: SETTINGS_COLORS.primary }} />
-                  Alerts & Notifications
-                </Typography>
-                
-                <Box sx={{ mb: 3 }}>
+              <Typography variant="subtitle1" sx={{ mt: 2, mb: 1 }}>
+                Certificate Status
+              </Typography>
+              <List>
+                <ListItem>
+                  <ListItemIcon>
+                    <CheckCircle color="success" />
+                  </ListItemIcon>
+                  <ListItemText 
+                    primary="SSL Certificate" 
+                    secondary="Valid until 2025-12-31"
+                  />
+                </ListItem>
+                <ListItem>
+                  <ListItemIcon>
+                    <Warning color="warning" />
+                  </ListItemIcon>
+                  <ListItemText 
+                    primary="API Certificate" 
+                    secondary="Expires in 30 days"
+                  />
+                </ListItem>
+              </List>
+            </Box>
+          </Grid>
+        </Grid>
+      </TabPanel>
+
+      {/* Monitoring Configuration Tab */}
+      <TabPanel value={currentTab} index={2}>
+        <Grid container spacing={3}>
+          <Grid item xs={12} md={6}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                <DataUsage sx={{ mr: 1, color: 'primary.main' }} />
+                📊 Data Collection
+              </Typography>
+              
+              <Box sx={{ mb: 3 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={config.monitoring.realTime}
+                      onChange={(e) => updateConfig('monitoring', 'realTime', e.target.checked)}
+                      color="primary"
+                    />
+                  }
+                  label="Real-time Monitoring"
+                />
+              </Box>
+
+              <Grid container spacing={2}>
+                <Grid item xs={6}>
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    Metrics Interval (ms)
+                  </Typography>
+                  <Slider
+                    value={config.monitoring.metricsInterval}
+                    onChange={(_, value) => updateConfig('monitoring', 'metricsInterval', value)}
+                    min={1000}
+                    max={10000}
+                    step={1000}
+                    marks={[
+                      { value: 1000, label: '1s' },
+                      { value: 5000, label: '5s' },
+                      { value: 10000, label: '10s' }
+                    ]}
+                    valueLabelDisplay="auto"
+                    disabled={!config.monitoring.realTime}
+                  />
+                </Grid>
+                <Grid item xs={6}>
+                  <TextField
+                    label="Data Retention (days)"
+                    type="number"
+                    value={config.monitoring.retentionDays}
+                    onChange={(e) => updateConfig('monitoring', 'retentionDays', parseInt(e.target.value))}
+                    fullWidth
+                    variant="outlined"
+                  />
+                </Grid>
+                <Grid item xs={12}>
+                  <FormControl fullWidth>
+                    <InputLabel>Export Format</InputLabel>
+                    <Select
+                      value={config.monitoring.exportFormat}
+                      onChange={(e) => updateConfig('monitoring', 'exportFormat', e.target.value)}
+                      label="Export Format"
+                    >
+                      <MenuItem value="JSON">JSON</MenuItem>
+                      <MenuItem value="CSV">CSV</MenuItem>
+                      <MenuItem value="XML">XML</MenuItem>
+                      <MenuItem value="Prometheus">Prometheus</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+              </Grid>
+            </Box>
+          </Grid>
+
+          <Grid item xs={12} md={6}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                <Notifications sx={{ mr: 1, color: 'primary.main' }} />
+                🔔 Alerts & Notifications
+              </Typography>
+              
+              <Box sx={{ mb: 3 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={config.monitoring.alerting}
+                      onChange={(e) => updateConfig('monitoring', 'alerting', e.target.checked)}
+                      color="primary"
+                    />
+                  }
+                  label="Enable Alerting"
+                />
+              </Box>
+
+              <Typography variant="subtitle1" sx={{ mb: 1 }}>
+                Alert Channels
+              </Typography>
+              <List>
+                <ListItem>
+                  <ListItemIcon>
+                    <CheckCircle color="success" />
+                  </ListItemIcon>
+                  <ListItemText primary="Email Notifications" />
+                  <ListItemSecondaryAction>
+                    <Switch defaultChecked color="primary" />
+                  </ListItemSecondaryAction>
+                </ListItem>
+                <ListItem>
+                  <ListItemIcon>
+                    <Error color="disabled" />
+                  </ListItemIcon>
+                  <ListItemText primary="Slack Integration" />
+                  <ListItemSecondaryAction>
+                    <Switch color="primary" />
+                  </ListItemSecondaryAction>
+                </ListItem>
+                <ListItem>
+                  <ListItemIcon>
+                    <Error color="disabled" />
+                  </ListItemIcon>
+                  <ListItemText primary="Webhook" />
+                  <ListItemSecondaryAction>
+                    <Switch color="primary" />
+                  </ListItemSecondaryAction>
+                </ListItem>
+              </List>
+            </Box>
+          </Grid>
+        </Grid>
+      </TabPanel>
+
+      {/* Interface Configuration Tab */}
+      <TabPanel value={currentTab} index={3}>
+        <Grid container spacing={3}>
+          <Grid item xs={12} md={6}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                <ColorLens sx={{ mr: 1, color: 'primary.main' }} />
+                🎨 Appearance
+              </Typography>
+              
+              <Grid container spacing={2}>
+                <Grid item xs={6}>
+                  <FormControl fullWidth>
+                    <InputLabel>Theme</InputLabel>
+                    <Select
+                      value={config.ui.theme}
+                      onChange={(e) => updateConfig('ui', 'theme', e.target.value)}
+                      label="Theme"
+                    >
+                      <MenuItem value="light">Light</MenuItem>
+                      <MenuItem value="dark">Dark</MenuItem>
+                      <MenuItem value="auto">Auto</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid item xs={6}>
+                  <FormControl fullWidth>
+                    <InputLabel>Density</InputLabel>
+                    <Select
+                      value={config.ui.density}
+                      onChange={(e) => updateConfig('ui', 'density', e.target.value)}
+                      label="Density"
+                    >
+                      <MenuItem value="compact">Compact</MenuItem>
+                      <MenuItem value="standard">Standard</MenuItem>
+                      <MenuItem value="comfortable">Comfortable</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid item xs={12}>
                   <FormControlLabel
                     control={
                       <Switch
-                        checked={config.monitoring.alerting}
-                        onChange={(e) => updateConfig('monitoring', 'alerting', e.target.checked)}
+                        checked={config.ui.animations}
+                        onChange={(e) => updateConfig('ui', 'animations', e.target.checked)}
                         color="primary"
                       />
                     }
-                    label="Enable Alerting"
+                    label="Enable Animations"
                   />
-                </Box>
-
-                <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                  Alert Channels
-                </Typography>
-                <List>
-                  <ListItem>
-                    <ListItemIcon>
-                      <CheckCircle color="success" />
-                    </ListItemIcon>
-                    <ListItemText primary="Email Notifications" />
-                    <ListItemSecondaryAction>
-                      <Switch defaultChecked color="primary" />
-                    </ListItemSecondaryAction>
-                  </ListItem>
-                  <ListItem>
-                    <ListItemIcon>
-                      <Error color="disabled" />
-                    </ListItemIcon>
-                    <ListItemText primary="Slack Integration" />
-                    <ListItemSecondaryAction>
-                      <Switch color="primary" />
-                    </ListItemSecondaryAction>
-                  </ListItem>
-                  <ListItem>
-                    <ListItemIcon>
-                      <Error color="disabled" />
-                    </ListItemIcon>
-                    <ListItemText primary="Webhook" />
-                    <ListItemSecondaryAction>
-                      <Switch color="primary" />
-                    </ListItemSecondaryAction>
-                  </ListItem>
-                </List>
-              </Paper>
-            </Grid>
-          </Grid>
-        </TabPanel>
-
-        {/* Interface Configuration Tab */}
-        <TabPanel value={currentTab} index={3}>
-          <Grid container spacing={3}>
-            <Grid item xs={12} md={6}>
-              <Paper sx={{ p: 3 }}>
-                <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-                  <ColorLens sx={{ mr: 1, color: SETTINGS_COLORS.primary }} />
-                  Appearance
-                </Typography>
-                
-                <Grid container spacing={2}>
-                  <Grid item xs={6}>
-                    <FormControl fullWidth>
-                      <InputLabel>Theme</InputLabel>
-                      <Select
-                        value={config.ui.theme}
-                        onChange={(e) => updateConfig('ui', 'theme', e.target.value)}
-                        label="Theme"
-                      >
-                        <MenuItem value="light">Light</MenuItem>
-                        <MenuItem value="dark">Dark</MenuItem>
-                        <MenuItem value="auto">Auto</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                  <Grid item xs={6}>
-                    <FormControl fullWidth>
-                      <InputLabel>Density</InputLabel>
-                      <Select
-                        value={config.ui.density}
-                        onChange={(e) => updateConfig('ui', 'density', e.target.value)}
-                        label="Density"
-                      >
-                        <MenuItem value="compact">Compact</MenuItem>
-                        <MenuItem value="standard">Standard</MenuItem>
-                        <MenuItem value="comfortable">Comfortable</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                  <Grid item xs={12}>
-                    <FormControlLabel
-                      control={
-                        <Switch
-                          checked={config.ui.animations}
-                          onChange={(e) => updateConfig('ui', 'animations', e.target.checked)}
-                          color="primary"
-                        />
-                      }
-                      label="Enable Animations"
-                    />
-                  </Grid>
                 </Grid>
-              </Paper>
-            </Grid>
-
-            <Grid item xs={12} md={6}>
-              <Paper sx={{ p: 3 }}>
-                <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-                  <Language sx={{ mr: 1, color: SETTINGS_COLORS.primary }} />
-                  Localization
-                </Typography>
-                
-                <Grid container spacing={2}>
-                  <Grid item xs={6}>
-                    <FormControl fullWidth>
-                      <InputLabel>Language</InputLabel>
-                      <Select
-                        value={config.ui.language}
-                        onChange={(e) => updateConfig('ui', 'language', e.target.value)}
-                        label="Language"
-                      >
-                        <MenuItem value="en">English</MenuItem>
-                        <MenuItem value="ru">Русский</MenuItem>
-                        <MenuItem value="de">Deutsch</MenuItem>
-                        <MenuItem value="fr">Français</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                  <Grid item xs={6}>
-                    <Typography variant="body2" sx={{ mb: 1 }}>
-                      Refresh Interval (ms)
-                    </Typography>
-                    <Slider
-                      value={config.ui.refreshInterval}
-                      onChange={(_, value) => updateConfig('ui', 'refreshInterval', value)}
-                      min={1000}
-                      max={30000}
-                      step={1000}
-                      marks={[
-                        { value: 1000, label: '1s' },
-                        { value: 5000, label: '5s' },
-                        { value: 30000, label: '30s' }
-                      ]}
-                      valueLabelDisplay="auto"
-                    />
-                  </Grid>
-                </Grid>
-              </Paper>
-            </Grid>
-
-            {/* Advanced Settings */}
-            <Grid item xs={12}>
-              <Paper sx={{ p: 3 }}>
-                <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-                  <Build sx={{ mr: 1, color: SETTINGS_COLORS.primary }} />
-                  Advanced Configuration
-                </Typography>
-                
-                <Accordion>
-                  <AccordionSummary expandIcon={<ExpandMore />}>
-                    <Typography>Developer Tools</Typography>
-                  </AccordionSummary>
-                  <AccordionDetails>
-                    <FormControlLabel
-                      control={<Switch color="primary" />}
-                      label="Enable Debug Mode"
-                    />
-                    <FormControlLabel
-                      control={<Switch color="primary" />}
-                      label="Show Performance Metrics"
-                    />
-                    <FormControlLabel
-                      control={<Switch color="primary" />}
-                      label="Enable Console Logging"
-                    />
-                  </AccordionDetails>
-                </Accordion>
-
-                <Accordion>
-                  <AccordionSummary expandIcon={<ExpandMore />}>
-                    <Typography>Experimental Features</Typography>
-                  </AccordionSummary>
-                  <AccordionDetails>
-                    <FormControlLabel
-                      control={<Switch color="primary" />}
-                      label="AI-powered Threat Detection"
-                    />
-                    <FormControlLabel
-                      control={<Switch color="primary" />}
-                      label="Automatic Rule Optimization"
-                    />
-                    <FormControlLabel
-                      control={<Switch color="primary" />}
-                      label="Machine Learning Analytics"
-                    />
-                  </AccordionDetails>
-                </Accordion>
-              </Paper>
-            </Grid>
+              </Grid>
+            </Box>
           </Grid>
-        </TabPanel>
-      </Paper>
 
-      {/* Backup/Restore Dialog */}
-      <Dialog open={showBackupDialog} onClose={() => setShowBackupDialog(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Backup Configuration</DialogTitle>
-        <DialogContent>
-          <Typography variant="body1">
-            Create a backup of your current firewall configuration. This includes all settings, rules, and preferences.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setShowBackupDialog(false)}>Cancel</Button>
-          <Button variant="contained" onClick={() => { exportConfiguration(); setShowBackupDialog(false); }}>
-            Create Backup
-          </Button>
-        </DialogActions>
-      </Dialog>
+          <Grid item xs={12} md={6}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                <Language sx={{ mr: 1, color: 'primary.main' }} />
+                🌐 Localization
+              </Typography>
+              
+              <Grid container spacing={2}>
+                <Grid item xs={6}>
+                  <FormControl fullWidth>
+                    <InputLabel>Language</InputLabel>
+                    <Select
+                      value={config.ui.language}
+                      onChange={(e) => updateConfig('ui', 'language', e.target.value)}
+                      label="Language"
+                    >
+                      <MenuItem value="en">English</MenuItem>
+                      <MenuItem value="ru">Русский</MenuItem>
+                      <MenuItem value="de">Deutsch</MenuItem>
+                      <MenuItem value="fr">Français</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid item xs={6}>
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    Refresh Interval (ms)
+                  </Typography>
+                  <Slider
+                    value={config.ui.refreshInterval}
+                    onChange={(_, value) => updateConfig('ui', 'refreshInterval', value)}
+                    min={1000}
+                    max={30000}
+                    step={1000}
+                    marks={[
+                      { value: 1000, label: '1s' },
+                      { value: 5000, label: '5s' },
+                      { value: 30000, label: '30s' }
+                    ]}
+                    valueLabelDisplay="auto"
+                  />
+                </Grid>
+              </Grid>
+            </Box>
+          </Grid>
+
+          {/* Advanced Settings */}
+          <Grid item xs={12}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                <Build sx={{ mr: 1, color: 'primary.main' }} />
+                🔧 Advanced Configuration
+              </Typography>
+              
+              <Accordion>
+                <AccordionSummary expandIcon={<ExpandMore />}>
+                  <Typography>Developer Tools</Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <FormControlLabel
+                    control={<Switch color="primary" />}
+                    label="Enable Debug Mode"
+                  />
+                  <FormControlLabel
+                    control={<Switch color="primary" />}
+                    label="Show Performance Metrics"
+                  />
+                  <FormControlLabel
+                    control={<Switch color="primary" />}
+                    label="Enable Console Logging"
+                  />
+                </AccordionDetails>
+              </Accordion>
+
+              <Accordion>
+                <AccordionSummary expandIcon={<ExpandMore />}>
+                  <Typography>Experimental Features</Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <FormControlLabel
+                    control={<Switch color="primary" />}
+                    label="AI-powered Threat Detection"
+                  />
+                  <FormControlLabel
+                    control={<Switch color="primary" />}
+                    label="Automatic Rule Optimization"
+                  />
+                  <FormControlLabel
+                    control={<Switch color="primary" />}
+                    label="Machine Learning Analytics"
+                  />
+                </AccordionDetails>
+              </Accordion>
+            </Box>
+          </Grid>
+        </Grid>
+      </TabPanel>
     </Box>
   );
 };

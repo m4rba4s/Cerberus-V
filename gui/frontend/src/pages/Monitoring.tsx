@@ -1,4 +1,4 @@
-// VPP eBPF Firewall Dashboard - Elite Monitoring Interface
+// VPP eBPF Firewall Dashboard - Monitoring Interface
 // Production-grade real-time monitoring with advanced visualizations
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -78,7 +78,7 @@ import {
 } from 'recharts';
 import { useWebSocket } from '../contexts/WebSocketContext';
 
-// Elite color schemes for professional visualization
+// color schemes for professional visualization
 const COLORS = {
   primary: '#1976d2',
   secondary: '#dc004e',
@@ -357,11 +357,17 @@ const Monitoring: React.FC = () => {
   };
 
   return (
-    <Box sx={{ p: 3, backgroundColor: COLORS.background, minHeight: '100vh' }}>
+    <Box sx={{ p: 3, minHeight: '100vh' }}>
       {/* Header */}
       <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Typography variant="h4" sx={{ fontWeight: 'bold', color: COLORS.primary }}>
-          🔍 Elite Security Monitoring
+        <Typography variant="h4" sx={{ fontWeight: 'bold', color: 'primary.main', display: 'flex', alignItems: 'center', gap: 2 }}>
+          🔍 Security Monitoring
+          <Chip 
+            icon={isConnected ? <CheckCircle /> : <Error />}
+            label={isConnected ? 'Connected' : 'Disconnected'}
+            color={isConnected ? 'success' : 'error'}
+            variant="outlined"
+          />
         </Typography>
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
           <FormControlLabel
@@ -395,12 +401,6 @@ const Monitoring: React.FC = () => {
           >
             Export Data
           </Button>
-          <Chip 
-            icon={isConnected ? <CheckCircle /> : <Error />}
-            label={isConnected ? 'Connected' : 'Disconnected'}
-            color={isConnected ? 'success' : 'error'}
-            variant="outlined"
-          />
         </Box>
       </Box>
 
@@ -415,10 +415,10 @@ const Monitoring: React.FC = () => {
       <Grid container spacing={3}>
         {/* Real-time Traffic Chart */}
         <Grid item xs={12} lg={8}>
-          <Paper sx={{ p: 3, height: 400 }}>
+          <Box sx={{ p: 3, height: 400, bgcolor: 'background.paper', borderRadius: 1 }}>
             <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-              <Timeline sx={{ mr: 1, color: COLORS.primary }} />
-              Real-time Traffic Analysis
+              <Timeline sx={{ mr: 1, color: 'primary.main' }} />
+              📊 Real-time Traffic Analysis
             </Typography>
             <ResponsiveContainer width="100%" height="90%">
               <LineChart data={trafficHistory}>
@@ -430,41 +430,41 @@ const Monitoring: React.FC = () => {
                 <Line 
                   type="monotone" 
                   dataKey="packetsPerSecond" 
-                  stroke={COLORS.primary} 
+                  stroke="#1976d2" 
                   strokeWidth={2}
                   name="Packets/sec"
                 />
                 <Line 
                   type="monotone" 
                   dataKey="bytesPerSecond" 
-                  stroke={COLORS.secondary} 
+                  stroke="#dc004e" 
                   strokeWidth={2}
                   name="Bytes/sec"
                 />
                 <Line 
                   type="monotone" 
                   dataKey="dropped" 
-                  stroke={COLORS.error} 
+                  stroke="#d32f2f" 
                   strokeWidth={2}
                   name="Dropped"
                 />
               </LineChart>
             </ResponsiveContainer>
-          </Paper>
+          </Box>
         </Grid>
 
         {/* System Metrics */}
         <Grid item xs={12} lg={4}>
-          <Paper sx={{ p: 3, height: 400 }}>
+          <Box sx={{ p: 3, height: 400 }}>
             <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-              <Speed sx={{ mr: 1, color: COLORS.primary }} />
-              System Performance
+              <Speed sx={{ mr: 1, color: 'primary.main' }} />
+              💻 System Performance
             </Typography>
             <Box sx={{ maxHeight: 340, overflowY: 'auto' }}>
               {systemMetrics.map((metric, index) => (
                 <Box key={index} sx={{ mb: 2 }}>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                    <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+                    <Typography variant="body2" sx={{ fontWeight: 'medium', color: 'text.primary' }}>
                       {metric.name}
                     </Typography>
                     <Typography 
@@ -480,7 +480,7 @@ const Monitoring: React.FC = () => {
                     sx={{
                       height: 8,
                       borderRadius: 4,
-                      backgroundColor: '#e0e0e0',
+                      backgroundColor: 'action.hover',
                       '& .MuiLinearProgress-bar': {
                         backgroundColor: getMetricStatusColor(metric.status)
                       }
@@ -489,18 +489,18 @@ const Monitoring: React.FC = () => {
                 </Box>
               ))}
             </Box>
-          </Paper>
+          </Box>
         </Grid>
 
         {/* Threat Detection */}
         <Grid item xs={12} lg={8}>
-          <Paper sx={{ p: 3, height: 500 }}>
+          <Box sx={{ p: 3, height: 500 }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
               <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center' }}>
-                <Security sx={{ mr: 1, color: COLORS.primary }} />
-                Threat Detection ({filteredThreats.length})
+                <Security sx={{ mr: 1, color: 'primary.main' }} />
+                🛡️ Threat Detection ({filteredThreats.length})
               </Typography>
-              <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+              <Box sx={{ display: 'flex', gap: 2 }}>
                 <FormControl size="small" sx={{ minWidth: 120 }}>
                   <InputLabel>Severity</InputLabel>
                   <Select
@@ -515,17 +515,20 @@ const Monitoring: React.FC = () => {
                     <MenuItem value="Low">Low</MenuItem>
                   </Select>
                 </FormControl>
-                <Switch 
-                  checked={alertsEnabled}
-                  onChange={(e) => setAlertsEnabled(e.target.checked)}
-                  color="primary"
+                <FormControlLabel
+                  control={
+                    <Switch 
+                      checked={alertsEnabled} 
+                      onChange={(e) => setAlertsEnabled(e.target.checked)}
+                      color="primary"
+                    />
+                  }
+                  label="Alerts"
                 />
-                <Typography variant="body2">Alerts</Typography>
               </Box>
             </Box>
-            
-            <TableContainer sx={{ maxHeight: 400 }} ref={threatTableRef}>
-              <Table stickyHeader size="small">
+            <TableContainer sx={{ maxHeight: 400, bgcolor: 'background.paper', borderRadius: 1 }}>
+              <Table stickyHeader>
                 <TableHead>
                   <TableRow>
                     <TableCell>Status</TableCell>
@@ -538,27 +541,26 @@ const Monitoring: React.FC = () => {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {filteredThreats.map((threat) => (
+                  {filteredThreats.slice(0, 20).map((threat) => (
                     <TableRow key={threat.id} hover>
                       <TableCell>
-                        <Tooltip title={threat.status}>
-                          {getStatusIcon(threat.status)}
-                        </Tooltip>
+                        {getStatusIcon(threat.status)}
                       </TableCell>
-                      <TableCell sx={{ fontSize: '0.8rem' }}>
-                        {threat.timestamp}
+                      <TableCell>
+                        <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                          {threat.timestamp}
+                        </Typography>
                       </TableCell>
                       <TableCell>
                         <Chip 
                           label={threat.type} 
                           size="small" 
-                          color="primary" 
                           variant="outlined"
                         />
                       </TableCell>
                       <TableCell>
                         <Chip 
-                          label={threat.severity}
+                          label={threat.severity} 
                           size="small"
                           sx={{ 
                             backgroundColor: getSeverityColor(threat.severity),
@@ -566,170 +568,91 @@ const Monitoring: React.FC = () => {
                           }}
                         />
                       </TableCell>
-                      <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
-                        {threat.source}
-                      </TableCell>
-                      <TableCell sx={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {threat.description}
+                      <TableCell>
+                        <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                          {threat.source}
+                        </Typography>
                       </TableCell>
                       <TableCell>
-                        <IconButton size="small" color="primary">
-                          <Visibility />
-                        </IconButton>
+                        <Typography variant="body2">
+                          {threat.description}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Tooltip title="Block Source">
+                          <IconButton size="small" color="error">
+                            <Security />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="View Details">
+                          <IconButton size="small" color="primary">
+                            <Visibility />
+                          </IconButton>
+                        </Tooltip>
                       </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </TableContainer>
-          </Paper>
+          </Box>
         </Grid>
 
         {/* Active Connections */}
         <Grid item xs={12} lg={4}>
-          <Paper sx={{ p: 3, height: 500 }}>
+          <Box sx={{ p: 3, height: 500 }}>
             <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-              <NetworkCheck sx={{ mr: 1, color: COLORS.primary }} />
-              Active Connections ({connections.length})
+              <NetworkCheck sx={{ mr: 1, color: 'primary.main' }} />
+              🌐 Active Connections ({connections.length})
             </Typography>
-            
-            <TableContainer sx={{ maxHeight: 400 }} ref={connectionTableRef}>
+            <TableContainer sx={{ maxHeight: 420, bgcolor: 'background.paper', borderRadius: 1 }}>
               <Table stickyHeader size="small">
                 <TableHead>
                   <TableRow>
                     <TableCell>Source</TableCell>
                     <TableCell>Protocol</TableCell>
                     <TableCell>State</TableCell>
-                    <TableCell>Duration</TableCell>
+                    <TableCell>Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {connections.map((conn) => (
-                    <TableRow 
-                      key={conn.id} 
-                      hover 
-                      sx={{ cursor: 'pointer' }}
-                      onClick={() => handleConnectionDetails(conn)}
-                    >
-                      <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.7rem' }}>
-                        {conn.source.split(':')[0]}
+                  {connections.slice(0, 15).map((connection) => (
+                    <TableRow key={connection.id} hover>
+                      <TableCell>
+                        <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                          {connection.source}
+                        </Typography>
                       </TableCell>
                       <TableCell>
                         <Chip 
-                          label={conn.protocol} 
+                          label={connection.protocol} 
                           size="small" 
-                          color="default"
                           variant="outlined"
                         />
                       </TableCell>
                       <TableCell>
                         <Chip 
-                          label={conn.state}
+                          label={connection.state} 
                           size="small"
-                          color={conn.state === 'ESTABLISHED' ? 'success' : 'default'}
+                          color={connection.state === 'ESTABLISHED' ? 'success' : 'default'}
                         />
                       </TableCell>
-                      <TableCell sx={{ fontSize: '0.8rem' }}>
-                        {conn.duration}
+                      <TableCell>
+                        <Tooltip title="Connection Details">
+                          <IconButton 
+                            size="small" 
+                            onClick={() => handleConnectionDetails(connection)}
+                          >
+                            <Visibility />
+                          </IconButton>
+                        </Tooltip>
                       </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </TableContainer>
-          </Paper>
-        </Grid>
-
-        {/* Performance Overview */}
-        <Grid item xs={12} lg={6}>
-          <Paper sx={{ p: 3, height: 350 }}>
-            <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-              <Memory sx={{ mr: 1, color: COLORS.primary }} />
-              VPP + eBPF Performance
-            </Typography>
-            
-            <Grid container spacing={2}>
-              <Grid item xs={6}>
-                <Card sx={{ p: 2, textAlign: 'center' }}>
-                  <Typography variant="h4" color="primary">
-                    {data?.dual_protection?.vpp_stats?.stats?.packets_processed?.toLocaleString() || '15,420'}
-                  </Typography>
-                  <Typography variant="body2" color="textSecondary">
-                    VPP Packets Processed
-                  </Typography>
-                </Card>
-              </Grid>
-              <Grid item xs={6}>
-                <Card sx={{ p: 2, textAlign: 'center' }}>
-                  <Typography variant="h4" color="secondary">
-                    {data?.dual_protection?.vpp_stats?.stats?.ebpf_map_hits?.toLocaleString() || '11,565'}
-                  </Typography>
-                  <Typography variant="body2" color="textSecondary">
-                    eBPF Map Hits
-                  </Typography>
-                </Card>
-              </Grid>
-              <Grid item xs={6}>
-                <Card sx={{ p: 2, textAlign: 'center' }}>
-                  <Typography variant="h4" color="success.main">
-                    {data?.dual_protection?.vpp_stats?.shared_maps ? 
-                      Object.keys(data.dual_protection.vpp_stats.shared_maps).length : 4}
-                  </Typography>
-                  <Typography variant="body2" color="textSecondary">
-                    Shared BPF Maps
-                  </Typography>
-                </Card>
-              </Grid>
-              <Grid item xs={6}>
-                <Card sx={{ p: 2, textAlign: 'center' }}>
-                  <Typography variant="h4" color="warning.main">
-                    {data?.dual_protection?.protection_mode === 'dual_protection' ? 'DUAL' : 'SINGLE'}
-                  </Typography>
-                  <Typography variant="body2" color="textSecondary">
-                    Protection Mode
-                  </Typography>
-                </Card>
-              </Grid>
-            </Grid>
-          </Paper>
-        </Grid>
-
-        {/* Traffic Distribution */}
-        <Grid item xs={12} lg={6}>
-          <Paper sx={{ p: 3, height: 350 }}>
-            <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-              <Storage sx={{ mr: 1, color: COLORS.primary }} />
-              Traffic Distribution
-            </Typography>
-            
-            <ResponsiveContainer width="100%" height="85%">
-              <PieChart>
-                <Pie
-                  data={[
-                    { name: 'Allowed', value: 75, fill: COLORS.success },
-                    { name: 'Blocked', value: 15, fill: COLORS.error },
-                    { name: 'Dropped', value: 10, fill: COLORS.warning }
-                  ]}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                  outerRadius={80}
-                  fill="#8884d8"
-                  dataKey="value"
-                >
-                  {[
-                    { name: 'Allowed', value: 75, fill: COLORS.success },
-                    { name: 'Blocked', value: 15, fill: COLORS.error },
-                    { name: 'Dropped', value: 10, fill: COLORS.warning }
-                  ].map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.fill} />
-                  ))}
-                </Pie>
-                <RechartsTooltip />
-              </PieChart>
-            </ResponsiveContainer>
-          </Paper>
+          </Box>
         </Grid>
       </Grid>
 
