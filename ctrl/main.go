@@ -296,9 +296,9 @@ func main() {
 	server := NewServer(bpfManager)
 
 	// Start Prometheus exporter
-	exporter := NewPrometheusExporter(bpfManager, server)
+	exporter := NewPrometheusExporter(8080)
 	go func() {
-		if err := exporter.Start(8080); err != nil {
+		if err := exporter.Start(); err != nil {
 			log.Printf("Prometheus exporter failed: %v", err)
 		}
 	}()

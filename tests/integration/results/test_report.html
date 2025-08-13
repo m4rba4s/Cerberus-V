@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cerberus-V Integration Test Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .header { background: #f0f0f0; padding: 20px; border-radius: 5px; }
+        .section { margin: 20px 0; }
+        .success { color: green; }
+        .warning { color: orange; }
+        .error { color: red; }
+        .code { background: #f4f4f4; padding: 10px; border-radius: 3px; font-family: monospace; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🛡️ Cerberus-V Integration Test Report</h1>
+        <p>Generated: $(date)</p>
+    </div>
+    
+    <div class="section">
+        <h2>Test Summary</h2>
+        <table>
+            <tr><th>Test Suite</th><th>Status</th><th>Results File</th></tr>
+            <tr><td>Unittest</td><td class="success">✅ Completed</td><td>unittest_output.log</td></tr>
+            <tr><td>Pytest</td><td class="success">✅ Completed</td><td>pytest_output.log</td></tr>
+        </table>
+    </div>
+    
+    <div class="section">
+        <h2>Test Categories</h2>
+        <ul>
+            <li><strong>Control Plane API:</strong> REST endpoint testing</li>
+            <li><strong>Metrics:</strong> Prometheus metrics validation</li>
+            <li><strong>Packet Processing:</strong> Scapy-based network testing</li>
+            <li><strong>Performance:</strong> Throughput and latency testing</li>
+            <li><strong>End-to-End:</strong> Complete pipeline validation</li>
+        </ul>
+    </div>
+    
+    <div class="section">
+        <h2>Files Generated</h2>
+        <ul>
+            <li><code>pytest_output.log</code></li>
+            <li><code>pytest_results.xml</code></li>
+            <li><code>test_report.html</code></li>
+            <li><code>unittest_output.log</code></li>
+        </ul>
+    </div>
+</body>
+</html>

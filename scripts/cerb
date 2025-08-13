@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cmd=${1:-help}
+shift || true
+
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+
+case "$cmd" in
+  compile)
+    policy="${1:?usage: cerb compile <policy.(yml|yaml|json)>}"
+    python3 "$root_dir/dsl/compiler/dsl_compiler.py" "$policy"
+    ;;
+  import-iptables)
+    rules="${1:?usage: cerb import-iptables <rules.v4>}"
+    python3 "$root_dir/dsl/importer/iptables_import.py" "$rules"
+    ;;
+  *)
+    echo "Cerberus-V CLI\n"
+    echo "  cerb compile <policy.yml>        # compile DSL → plan"
+    echo "  cerb import-iptables <rules.v4>  # iptables-save → DSL"
+    ;;
+esac
+
+

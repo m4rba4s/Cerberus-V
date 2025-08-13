@@ -47,7 +47,7 @@ const TopBar: React.FC<TopBarProps> = ({ onMenuClick }) => {
         </IconButton>
         
         <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
-          VPP eBPF Firewall Management
+          Cerberus-V VPP eBPF Security
         </Typography>
         
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>

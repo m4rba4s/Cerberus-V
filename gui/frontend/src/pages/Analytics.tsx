@@ -1,72 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import {
-  Box,
-  Card,
-  CardContent,
-  Typography,
-  Grid,
-  Tabs,
-  Tab,
-  Paper,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Chip,
-  Button,
-  Alert,
-  CircularProgress,
-  LinearProgress,
-  TextField,
-  IconButton,
-  Tooltip,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  List,
-  ListItem,
-  ListItemIcon,
-  ListItemText,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
-  Badge,
-  Menu,
-  MenuItem
-} from '@mui/material';
-import {
-  Security,
-  NetworkCheck,
-  Settings,
-  Public,
-  Speed,
-  Search,
-  Analytics as AnalyticsIcon,
-  TrendingUp,
-  Block,
-  Warning,
-  CheckCircle,
-  Error,
-  Info,
-  PlayArrow,
-  Stop,
-  Refresh,
-  ExpandMore,
-  MoreVert,
-  Visibility,
-  Shield,
-  Assessment,
-  BugReport,
-  Timeline,
-  LocationOn,
-  Computer,
-  Storage,
-  Memory,
-  NetworkWifi
-} from '@mui/icons-material';
+import { Box, Card, CardContent, Typography, Grid, Tabs, Tab, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Chip, Button, Alert, CircularProgress, IconButton, Dialog, DialogTitle, DialogContent, DialogActions, Menu, MenuItem, LinearProgress } from '@mui/material';
+import Forensics from './ForensicsTab';
+import { Security, NetworkCheck, Settings, Public, Search, Analytics as AnalyticsIcon, MoreVert, PlayArrow, Stop, Refresh, Shield, BugReport } from '@mui/icons-material';
 
 interface LiveThreat {
   id: string;
@@ -83,6 +18,8 @@ interface LiveThreat {
   status: 'active' | 'blocked' | 'investigating' | 'resolved';
   description?: string;
   mitreId?: string;
+  mitreTactic?: string;
+  mitreTechnique?: string;
 }
 
 interface NetworkFlow {
@@ -121,6 +58,12 @@ const Analytics: React.FC = () => {
   const [liveThreats, setLiveThreats] = useState<LiveThreat[]>([]);
   const [networkFlows, setNetworkFlows] = useState<NetworkFlow[]>([]);
   const [serviceMetrics, setServiceMetrics] = useState<ServiceMetrics[]>([]);
+  const [geoSummary, setGeoSummary] = useState<{private:number; public:number}>({private:0, public:0});
+  const [topPorts, setTopPorts] = useState<Array<{port:number; count:number; service:string}>>([]);
+  const [topSources, setTopSources] = useState<Array<{value:string; count:number}>>([]);
+  const [topDestinations, setTopDestinations] = useState<Array<{value:string; count:number}>>([]);
+  const [blockedCountries, setBlockedCountries] = useState<string[]>([]);
+  const [countries, setCountries] = useState<Array<{code:string; count:number}>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedThreat, setSelectedThreat] = useState<LiveThreat | null>(null);
@@ -131,17 +74,20 @@ const Analytics: React.FC = () => {
   const [lastActionResult, setLastActionResult] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchAnalyticsData();
-    const interval = setInterval(fetchAnalyticsData, 5000);
-    return () => clearInterval(interval);
+    const controller = new AbortController();
+    const load = () => fetchAnalyticsData(controller.signal);
+    load();
+    const interval = setInterval(load, 8000);
+    return () => { controller.abort(); clearInterval(interval); };
   }, []);
 
-  const fetchAnalyticsData = async () => {
+  const fetchAnalyticsData = async (signal?: AbortSignal) => {
     try {
-      const [threatsRes, flowsRes, servicesRes] = await Promise.all([
-        fetch('http://localhost:8081/api/analytics/live-threats'),
-        fetch('http://localhost:8081/api/analytics/network-flows'),
-        fetch('http://localhost:8081/api/analytics/service-metrics')
+      const [threatsRes, flowsRes, servicesRes, geoRes] = await Promise.all([
+        fetch('/api/analytics/live-threats', { signal }),
+        fetch('/api/analytics/network-flows', { signal }),
+        fetch('/api/analytics/service-metrics', { signal }),
+        fetch('/api/analytics/geo', { signal })
       ]);
 
       // Handle each response individually
@@ -160,13 +106,24 @@ const Analytics: React.FC = () => {
         setServiceMetrics(servicesData.services || []);
       }
 
+      if (geoRes.ok) {
+        const geo = await geoRes.json();
+        setGeoSummary(geo.geo || {private:0, public:0});
+        setTopPorts(geo.topPorts || []);
+        setTopSources(geo.topSources || []);
+        setTopDestinations(geo.topDestinations || []);
+        setBlockedCountries(geo.blockedCountries || []);
+        setCountries(geo.countries || []);
+      }
+
       // Only set error if ALL requests failed
-      if (!threatsRes.ok && !flowsRes.ok && !servicesRes.ok) {
+      if (!threatsRes.ok && !flowsRes.ok && !servicesRes.ok && !geoRes.ok) {
         setError('Failed to fetch analytics data');
       } else {
         setError(null);
       }
     } catch (err) {
+      if ((err as any)?.name === 'AbortError') return;
       setError('Failed to fetch analytics data');
       console.error('Analytics fetch error:', err);
     } finally {
@@ -179,7 +136,7 @@ const Analytics: React.FC = () => {
     setLastActionResult(null);
     
     try {
-      const response = await fetch('http://localhost:8081/api/flow/action', {
+      const response = await fetch('/api/flow/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -224,7 +181,7 @@ const Analytics: React.FC = () => {
 
   const handleFlowAction = async (flow: NetworkFlow, action: string) => {
     try {
-      const response = await fetch('http://localhost:8081/api/flow/action', {
+      const response = await fetch('/api/flow/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -262,7 +219,7 @@ const Analytics: React.FC = () => {
 
   const handleServiceAction = async (serviceName: string, action: string) => {
     try {
-      const response = await fetch(`http://localhost:8081/api/system/service/${serviceName}/${action}`, {
+      const response = await fetch(`/api/system/service/${serviceName}/${action}`, {
         method: 'POST'
       });
       if (response.ok) {
@@ -325,7 +282,7 @@ const Analytics: React.FC = () => {
 
       {error && (
         <Alert severity="warning" sx={{ mb: 3 }}>
-          {error} - Backend on port 8081 | Using demo data for display
+          {error} - Using demo data for display
         </Alert>
       )}
 
@@ -335,7 +292,6 @@ const Analytics: React.FC = () => {
           <Tab label="🌐 Network Flows" icon={<NetworkCheck />} />
           <Tab label="⚙️ Service Control" icon={<Settings />} />
           <Tab label="🗺️ Geo Analytics" icon={<Public />} />
-          <Tab label="📊 Performance" icon={<Speed />} />
           <Tab label="🔍 Forensics" icon={<Search />} />
           <Tab label="🛡️ MITRE ATT&CK" icon={<Shield />} />
           <Tab label="📈 Threat Hunting" icon={<BugReport />} />
@@ -446,12 +402,11 @@ const Analytics: React.FC = () => {
                         </TableCell>
                         <TableCell>
                           {threat.mitreId && (
-                            <Chip 
-                              label={threat.mitreId} 
-                              size="small" 
-                              variant="outlined"
-                              color="secondary"
-                            />
+                            <Box sx={{ display:'flex', gap: 0.5, alignItems:'center', flexWrap:'wrap' }}>
+                              <Chip label={threat.mitreId} size="small" variant="outlined" color="secondary" />
+                              {threat.mitreTactic && <Chip label={threat.mitreTactic} size="small" />}
+                              {threat.mitreTechnique && <Chip label={threat.mitreTechnique} size="small" />}
+                            </Box>
                           )}
                         </TableCell>
                         <TableCell>
@@ -676,40 +631,145 @@ const Analytics: React.FC = () => {
       {currentTab === 3 && (
         <Paper sx={{ p: 3 }}>
           <Typography variant="h6" gutterBottom>🗺️ Geographic Threat Intelligence</Typography>
-          <Alert severity="info">
-            Advanced geographic analytics including country-based blocking, IP geolocation, and threat origin mapping.
-          </Alert>
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={4}>
+              <Card>
+                <CardContent>
+                  <Typography variant="subtitle1">Traffic by Origin</Typography>
+                  <Box sx={{ display:'flex', gap:2, mt:1 }}>
+                    <Chip label={`Private ${geoSummary.private}`} color="info" />
+                    <Chip label={`Public ${geoSummary.public}`} color="primary" />
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Card>
+                <CardContent>
+                  <Typography variant="subtitle1">Top Ports</Typography>
+                  {topPorts.slice(0,8).map(p => (
+                    <Box key={p.port} sx={{ display:'flex', justifyContent:'space-between' }}>
+                      <Typography variant="body2">{p.port} ({p.service})</Typography>
+                      <Typography variant="body2">{p.count}</Typography>
+                    </Box>
+                  ))}
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Card>
+                <CardContent>
+                  <Typography variant="subtitle1">Top Sources</Typography>
+                  {topSources.slice(0,8).map(s => (
+                    <Box key={s.value} sx={{ display:'flex', justifyContent:'space-between' }}>
+                      <Typography variant="body2">{s.value}</Typography>
+                      <Typography variant="body2">{s.count}</Typography>
+                    </Box>
+                  ))}
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <Card>
+                <CardContent>
+                  <Typography variant="subtitle1">Top Countries</Typography>
+                  {countries.slice(0,12).map(c => (
+                    <Box key={c.code} sx={{ display:'flex', justifyContent:'space-between' }}>
+                      <Typography variant="body2">{c.code}</Typography>
+                      <Typography variant="body2">{c.count}</Typography>
+                    </Box>
+                  ))}
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <Card>
+                <CardContent>
+                  <Typography variant="subtitle1" gutterBottom>Block Country</Typography>
+                  <Box sx={{ display:'flex', gap:1, flexWrap:'wrap' }}>
+                    {countries.slice(0,20).map(c => (
+                      <Button key={c.code} size="small" variant="outlined" onClick={async ()=>{
+                        try{await fetch('/api/geo/block',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({country:c.code})});
+                          fetchAnalyticsData();}catch(e){/* noop */}
+                      }}>{c.code}</Button>
+                    ))}
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12}>
+              <Card>
+                <CardContent>
+                  <Typography variant="subtitle1" gutterBottom>Blocked Countries</Typography>
+                  <Box sx={{ display:'flex', gap:1, flexWrap:'wrap' }}>
+                    {blockedCountries.map(c => (<Chip key={c} label={c} />))}
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
         </Paper>
       )}
 
       {currentTab === 4 && (
         <Paper sx={{ p: 3 }}>
-          <Typography variant="h6" gutterBottom>📊 System Performance Analytics</Typography>
-          <Alert severity="info">
-            Real-time performance monitoring, resource utilization, and capacity planning metrics.
-          </Alert>
+          <Typography variant="h6" gutterBottom>🔍 Digital Forensics & Evidence Collection</Typography>
+          <Forensics />
         </Paper>
       )}
 
       {currentTab === 5 && (
         <Paper sx={{ p: 3 }}>
-          <Typography variant="h6" gutterBottom>🔍 Digital Forensics & Evidence Collection</Typography>
-          <Alert severity="info">
-            Packet capture analysis, file hash verification, timeline reconstruction, and evidence chain management.
-          </Alert>
+          <Typography variant="h6" gutterBottom>🛡️ MITRE ATT&CK Overview</Typography>
+          {(() => {
+            const summaryMap: Record<string, { id: string; tactic: string; technique: string; count: number }> = {};
+            for (const t of liveThreats) {
+              if (!t.mitreId) continue;
+              if (!summaryMap[t.mitreId]) {
+                summaryMap[t.mitreId] = {
+                  id: t.mitreId,
+                  tactic: t.mitreTactic || '',
+                  technique: t.mitreTechnique || '',
+                  count: 0,
+                };
+              }
+              summaryMap[t.mitreId].count += 1;
+            }
+            const rows = Object.values(summaryMap).sort((a,b)=> b.count - a.count);
+            if (rows.length === 0) {
+              return (
+                <Alert severity="warning">Нет данных MITRE в текущих угрозах. Зайдите на вкладку "Live Threats" или подождите новые события.</Alert>
+              );
+            }
+            return (
+              <TableContainer sx={{ mt: 2 }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Technique ID</TableCell>
+                      <TableCell>Technique</TableCell>
+                      <TableCell>Tactic</TableCell>
+                      <TableCell align="right">Count</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {rows.map(r => (
+                      <TableRow key={r.id} hover>
+                        <TableCell><Chip label={r.id} size="small" color="secondary" variant="outlined" /></TableCell>
+                        <TableCell>{r.technique || '—'}</TableCell>
+                        <TableCell>{r.tactic || '—'}</TableCell>
+                        <TableCell align="right">{r.count}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            );
+          })()}
         </Paper>
       )}
 
       {currentTab === 6 && (
-        <Paper sx={{ p: 3 }}>
-          <Typography variant="h6" gutterBottom>🛡️ MITRE ATT&CK Framework Integration</Typography>
-          <Alert severity="info">
-            Threat mapping to MITRE ATT&CK tactics and techniques, attack chain analysis, and threat intelligence correlation.
-          </Alert>
-        </Paper>
-      )}
-
-      {currentTab === 7 && (
         <Paper sx={{ p: 3 }}>
           <Typography variant="h6" gutterBottom>📈 Advanced Threat Hunting</Typography>
           <Alert severity="info">

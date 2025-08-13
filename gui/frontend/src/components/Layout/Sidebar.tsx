@@ -20,6 +20,7 @@ import {
   Analytics as AnalyticsIcon,
   Security as SecurityIcon,
   Monitor as MonitorIcon,
+  ListAlt as ListAltIcon,
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 
@@ -31,10 +32,11 @@ interface SidebarProps {
 
 const menuItems = [
   { text: 'Dashboard', path: '/dashboard', icon: <DashboardIcon /> },
-  { text: 'Configuration', path: '/configuration', icon: <SettingsIcon /> },
+  { text: 'Rules', path: '/configuration', icon: <SettingsIcon /> },
   { text: 'Monitoring', path: '/monitoring', icon: <MonitorIcon /> },
   { text: 'Analytics', path: '/analytics', icon: <AnalyticsIcon /> },
   { text: 'Settings', path: '/settings', icon: <SecurityIcon /> },
+  { text: 'Syscalls & Logs', path: '/syscalls', icon: <ListAltIcon /> },
 ];
 
 const Sidebar: React.FC<SidebarProps> = ({ width, mobileOpen, onDrawerToggle }) => {

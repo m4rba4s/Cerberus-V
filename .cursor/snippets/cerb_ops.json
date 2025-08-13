@@ -1,0 +1,63 @@
+{
+  "cerb: backend restart": {
+    "prefix": "cerb-back-restart",
+    "body": [
+      "pkill -f 'uvicorn main:app' || true",
+      "cd /home/outspoken/Cerberus-V/gui/backend",
+      "/home/outspoken/Cerberus-V/gui/backend/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info"
+    ]
+  },
+  "cerb: frontend restart": {
+    "prefix": "cerb-front-restart",
+    "body": [
+      "pkill -f 'vite' || true",
+      "cd /home/outspoken/Cerberus-V/gui/frontend",
+      "npm run dev"
+    ]
+  },
+  "cerb: health curls": {
+    "prefix": "cerb-curl-checks",
+    "body": [
+      "curl -sS http://localhost:8000/api/system/status | jq .",
+      "curl -sS http://localhost:8000/api/analytics/live-threats | jq .",
+      "curl -sS http://localhost:8000/api/analytics/network-flows | jq .",
+      "curl -sS http://localhost:8000/api/obs/syscalls | jq ."
+    ]
+  },
+  "cerb: set mode": {
+    "prefix": "cerb-mode",
+    "body": [
+      "curl -sS -X POST http://localhost:8000/api/mode -H 'Content-Type: application/json' -d '{\"mode\":\"${1|simulation,live|}\"}' | jq ."
+    ]
+  },
+  "cerb: geo block country": {
+    "prefix": "cerb-geo-block",
+    "body": [
+      "curl -sS -X POST http://localhost:8000/api/geo/block -H 'Content-Type: application/json' -d '{\"country\":\"${1:RU}\"}' | jq ."
+    ]
+  },
+  "cerb: flow block ip": {
+    "prefix": "cerb-flow-block",
+    "body": [
+      "curl -sS -X POST http://localhost:8000/api/flow/action -H 'Content-Type: application/json' -d '{\"action\":\"block_ip\",\"flowId\":\"manual\",\"sourceIp\":\"${1:1.2.3.4}\",\"destinationIp\":\"0.0.0.0\"}' | jq ."
+    ]
+  },
+  "cerb: process details": {
+    "prefix": "cerb-proc",
+    "body": [
+      "curl -sS http://localhost:8000/api/obs/process/${1:1} | jq ."
+    ]
+  },
+  "cerb: critical logs": {
+    "prefix": "cerb-logs",
+    "body": [
+      "curl -sS 'http://localhost:8000/api/logs/critical?limit=${1:100}' | jq ."
+    ]
+  },
+  "cerb: vpp ifaces": {
+    "prefix": "cerb-vpp-ifaces",
+    "body": [
+      "vppctl show interface | sed -n '1,200p'"
+    ]
+  }
+}

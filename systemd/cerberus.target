@@ -1,9 +1,18 @@
 [Unit]
-Description=Cerberus-V Dual-Layer Firewall System
+Description=Cerberus-V Firewall System
 Documentation=https://github.com/m4rba4s/Cerberus-V
-Wants=cerberus-ctrl.service cerberus-dataplane.service
-After=cerberus-ctrl.service cerberus-dataplane.service
+Wants=network-online.target
+After=network-online.target
 AllowIsolate=yes
+
+# Dependencies
+Requires=cerberus-ctrl.service
+Requires=cerberus-dataplane.service
+Requires=cerberus-maintenance.service
+
+# Order
+Before=multi-user.target
+After=basic.target
 
 [Install]
 WantedBy=multi-user.target 

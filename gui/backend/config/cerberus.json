@@ -1,0 +1,48 @@
+{
+  "vpp": {
+    "enabled": true,
+    "workers": 4,
+    "heapSize": "1G",
+    "logLevel": "info",
+    "plugins": [
+      "ebpf-classify",
+      "acl",
+      "nat"
+    ]
+  },
+  "ebpf": {
+    "enabled": true,
+    "interface": "wlp0s20f0u10",
+    "engine_state": "auto",
+    "queueId": 0,
+    "verbose": false,
+    "maps": {
+      "maxEntries": 65536,
+      "autoCleanup": true
+    }
+  },
+  "security": {
+    "authEnabled": false,
+    "sessionTimeout": 3600,
+    "maxLoginAttempts": 5,
+    "encryption": "AES256",
+    "certificates": {
+      "autoRenew": true,
+      "keySize": 2048
+    }
+  },
+  "monitoring": {
+    "realTime": true,
+    "retentionDays": 30,
+    "metricsInterval": 2000,
+    "alerting": true,
+    "exportFormat": "JSON"
+  },
+  "ui": {
+    "theme": "light",
+    "language": "en",
+    "refreshInterval": 5000,
+    "animations": true,
+    "density": "standard"
+  }
+}

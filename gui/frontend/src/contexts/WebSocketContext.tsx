@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // WebSocket Context for real-time communication
 
-import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback, memo } from 'react';
 
 interface SystemInfo {
   hostname: string;
@@ -53,6 +53,25 @@ interface DualProtectionStats {
   };
 }
 
+// Realtime, flattened payloads used by UI (tolerant to backend changes)
+interface FirewallRealtime {
+  engine_status?: 'running' | 'inactive' | 'simulation' | 'error';
+  protection_mode?: string;
+  dual_protection_active?: boolean;
+  packets_processed?: number;
+  packets_blocked?: number;
+  ebpf_programs?: number;
+  vpp_interfaces?: number;
+  interface?: string;
+}
+
+interface SystemRealtime {
+  uptime?: number; // seconds
+  cpu_usage?: number; // percent
+  memory_used?: number; // bytes
+  memory_total?: number; // bytes
+}
+
 interface WebSocketData {
   type?: string;
   timestamp?: string;
@@ -75,6 +94,9 @@ interface WebSocketData {
   dual_protection?: DualProtectionStats;
   is_running?: boolean;
   uptime?: string;
+  // Flattened, enterprise-friendly fields used by dashboard
+  firewall?: FirewallRealtime;
+  system?: SystemRealtime;
 }
 
 interface WebSocketContextType {
@@ -91,16 +113,15 @@ const WebSocketContext = createContext<WebSocketContextType | undefined>(undefin
 // Простой WebSocket без Singleton
 class SimpleWebSocket {
   private ws: WebSocket | null = null;
-  private url: string = 'ws://localhost:8081/ws';
+  private url: string = 'ws://localhost:8000/ws';
   private listeners: Set<(data: WebSocketData) => void> = new Set();
   private stateListeners: Set<(state: string) => void> = new Set();
   private reconnectTimer: number | null = null;
   private isDestroyed = false;
   private currentState: string = 'disconnected';
-
-  constructor() {
-    console.log('🔧 Создан новый WebSocket экземпляр');
-  }
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 10;
+  private reconnectDelay = 1000; // Start with 1 second
 
   public connect(): void {
     if (this.isDestroyed || this.ws?.readyState === WebSocket.CONNECTING || this.ws?.readyState === WebSocket.OPEN) {
@@ -112,10 +133,7 @@ class SimpleWebSocket {
 
     try {
       this.ws = new WebSocket(this.url);
-      this.ws.onopen = () => {
-        console.log('✅ WebSocket подключен успешно!');
-        this.updateState('connected');
-      };
+      this.ws.onopen = () => { this.updateState('connected'); };
       
       this.ws.onmessage = (event: MessageEvent) => {
         try {
@@ -132,15 +150,25 @@ class SimpleWebSocket {
         }
       };
       
-      this.ws.onclose = (event: CloseEvent) => {
-        console.log(`🔌 WebSocket закрыт: code=${event.code}, reason=${event.reason}`);
+      this.ws.onclose = (_event: CloseEvent) => {
         this.updateState('disconnected');
+        // Auto-reconnect logic
+        if (!this.isDestroyed && this.reconnectAttempts < this.maxReconnectAttempts) {
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+          }
+          
+          this.reconnectAttempts++;
+          const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000);
+          
+          this.reconnectTimer = window.setTimeout(() => {
+            this.connect();
+          }, delay);
+        } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+          this.updateState('error');
+        }
       };
-      
-      this.ws.onerror = (event: Event) => {
-        console.error('❌ WebSocket ошибка:', event);
-        this.updateState('error');
-      };
+      this.ws.onerror = (_event: Event) => { this.updateState('error'); };
 
     } catch (error) {
       console.error('❌ Ошибка создания WebSocket:', error);
@@ -175,11 +203,7 @@ class SimpleWebSocket {
     this.stateListeners.delete(listener);
   }
 
-  public forceReconnect(): void {
-    console.log('🔄 Принудительное переподключение');
-    this.ws?.close();
-    setTimeout(() => this.connect(), 1000);
-  }
+  public forceReconnect(): void { this.ws?.close(); setTimeout(() => this.connect(), 200); }
 
   public getState(): string {
     return this.currentState;
@@ -194,7 +218,7 @@ class SimpleWebSocket {
   }
 }
 
-export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+const WSProviderInner: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [data, setData] = useState<WebSocketData | null>(null);
   const [connectionState, setConnectionState] = useState<'connecting' | 'connected' | 'disconnected' | 'error' | 'reconnecting'>('disconnected');
   const [lastError, setLastError] = useState<string | null>(null);
@@ -203,7 +227,23 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   
   // Stable callback references
   const handleData = useCallback((newData: WebSocketData) => {
-    setData(newData);
+    // Merge incoming payloads with existing state instead of replacing it.
+    // Backend heartbeat may not include firewall/system, so preserve what we already have.
+    setData((prev) => {
+      const merged: WebSocketData = {
+        ...(prev || {}),
+        ...(newData || {}),
+        firewall: {
+          ...(prev?.firewall || {}),
+          ...(newData?.firewall || {}),
+        },
+        system: {
+          ...(prev?.system || {}),
+          ...(newData as any)?.system || {},
+        },
+      } as WebSocketData;
+      return merged;
+    });
     setLastError(null);
   }, []);
 
@@ -219,31 +259,67 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, []);
 
   useEffect(() => {
-    // Создаем WebSocket только один раз
     if (!wsRef.current) {
-      console.log('🔧 Инициализируем WebSocket в Provider');
       wsRef.current = new SimpleWebSocket();
       wsRef.current.addListener(handleData);
       wsRef.current.addStateListener(handleStateChange);
-      
-      // Устанавливаем начальное состояние
       setConnectionState(wsRef.current.getState() as any);
-      
-      // Подключаемся
       wsRef.current.connect();
     }
-
-    // Cleanup при размонтировании
     return () => {
       if (wsRef.current) {
-        console.log('🧹 Cleanup WebSocket в Provider');
         wsRef.current.removeListener(handleData);
         wsRef.current.removeStateListener(handleStateChange);
         wsRef.current.disconnect();
         wsRef.current = null;
       }
     };
-  }, []); // Пустые deps - выполняется только один раз!
+  }, [handleData, handleStateChange]);
+
+  // Poll REST status to enrich WS data with real engine running state.
+  useEffect(() => {
+    let isMounted = true;
+    const controller = new AbortController();
+
+    const pull = async () => {
+      try {
+        const res = await fetch('/api/system/status', { signal: controller.signal });
+        if (!res.ok) return;
+        const s = await res.json();
+        if (!isMounted) return;
+        setData((prev) => {
+          const next: WebSocketData = {
+            ...(prev || {}),
+            firewall: {
+              ...(prev?.firewall || {}),
+              engine_status: s?.running ? 'running' : 'inactive',
+              interface: s?.interface || prev?.firewall?.interface,
+              protection_mode: s?.engine_state || prev?.firewall?.protection_mode,
+              ebpf_programs: s?.active_programs ?? (prev?.firewall?.ebpf_programs || 0),
+              vpp_interfaces: (prev?.firewall?.vpp_interfaces || 0),
+              packets_processed: s?.stats?.packets_processed ?? (prev?.firewall?.packets_processed || 0),
+              packets_blocked: s?.stats?.packets_dropped ?? (prev?.firewall?.packets_blocked || 0),
+            },
+            system: {
+              ...(prev?.system || {}),
+              cpu_usage: s?.stats?.cpu_usage ?? (prev?.system?.cpu_usage || 0),
+            },
+          } as WebSocketData;
+          return next;
+        });
+      } catch (_) {
+        // ignore
+      }
+    };
+
+    pull();
+    const id = window.setInterval(pull, 2000);
+    return () => {
+      isMounted = false;
+      controller.abort();
+      clearInterval(id);
+    };
+  }, []);
 
   const value: WebSocketContextType = {
     data,
@@ -255,11 +331,11 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   return (
-    <WebSocketContext.Provider value={value}>
-      {children}
-    </WebSocketContext.Provider>
+    <WebSocketContext.Provider value={value}>{children}</WebSocketContext.Provider>
   );
 };
+
+export const WebSocketProvider = memo(WSProviderInner);
 
 export const useWebSocket = (): WebSocketContextType => {
   const context = useContext(WebSocketContext);

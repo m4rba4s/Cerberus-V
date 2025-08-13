@@ -2,7 +2,7 @@
 // Network Interface Card Component
 
 import React from 'react';
-import { Card, CardContent, Typography, Box, Chip, LinearProgress } from '@mui/material';
+import { Card, CardContent, Typography, Box, Chip } from '@mui/material';
 import { NetworkCheck, Wifi, Cable, CheckCircle, Error } from '@mui/icons-material';
 
 interface NetworkInterface {

@@ -1,50 +1,59 @@
 #!/usr/bin/env python3
-"""
-Cerberus-V Professional Firewall Backend with Real VPP/eBPF Integration
-Production-ready firewall management with real system control
-"""
-
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
+# SPDX-License-Identifier: Apache-2.0
+# Cerberus-V FastAPI Backend: Preflight, Rules, Mode Management
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from typing import List, Dict, Optional
+import logging
+import json
+from datetime import datetime, UTC
+import re
+import psutil
 import uvicorn
 import asyncio
-import json
-import logging
-import time
-import uuid
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
-from pydantic import BaseModel, Field
-import ipaddress
-import socket
-import psutil
-import random
+import sys
+from pathlib import Path
+import pwd
 import os
+import subprocess
+import shutil
+import json as pyjson
+import random
+import shlex
+import socket
+import platform
+import ipaddress
 
-# Import real system control
+# Add project root to path
+sys.path.append(str(Path(__file__).parent.parent.parent))
+
+from preflight import preflight_manager, FirewallRule
+
+# Import LIVE mode API (use mock for stability)
 try:
-    from modules.real_system_control import get_system_control
-    REAL_SYSTEM_AVAILABLE = True
+    from mock_live_api import router as live_router
+    print("Mock LIVE mode API router loaded")
 except ImportError:
-    REAL_SYSTEM_AVAILABLE = False
-    logging.warning("Real system control not available, using fallback mode")
+    try:
+        from live_api import router as live_router
+        print("Real LIVE mode API router loaded")
+    except ImportError:
+        live_router = None
+        print("No LIVE mode API router available")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize system control
-system_control = get_system_control(demo_mode=True) if REAL_SYSTEM_AVAILABLE else None
-
+# FastAPI app
 app = FastAPI(
-    title="Cerberus-V Professional Firewall",
-    description="Production VPP/eBPF Firewall Management System",
-    version="2.0.0"
+    title="Cerberus-V API",
+    description="APT-Grade Firewall Management API",
+    version="1.0.0"
 )
 
-# CORS middleware
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -53,1374 +62,2065 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ================== PROFESSIONAL DATA MODELS ==================
+# Include LIVE mode API router
+if live_router:
+    app.include_router(live_router)
+    logger.info("LIVE mode API router included")
+else:
+    logger.warning("LIVE mode API router not available")
 
-class FirewallRule(BaseModel):
-    id: Optional[str] = None
-    name: str = Field(..., description="Rule name")
-    description: Optional[str] = ""
-    enabled: bool = True
-    priority: int = Field(default=100, ge=1, le=1000)
-    
-    # Source configuration
-    source_ip: str = Field(default="any", description="Source IP/CIDR")
-    source_port: str = Field(default="any", description="Source port/range")
-    source_zone: Optional[str] = "any"
-    
-    # Destination configuration
-    dest_ip: str = Field(default="any", description="Destination IP/CIDR")
-    dest_port: str = Field(default="any", description="Destination port/range")
-    dest_zone: Optional[str] = "any"
-    
-    # Protocol and action
-    protocol: str = Field(default="any", pattern=r"^(tcp|udp|icmp|any)$")
-    action: str = Field(default="allow", pattern=r"^(allow|deny|drop|reject)$")
-    
-    # Advanced features
-    log_enabled: bool = False
-    rate_limit: Optional[int] = None
-    connection_limit: Optional[int] = None
-    geo_blocking: List[str] = []
-    time_restrictions: Optional[Dict[str, Any]] = None
-    
-    # Metadata
-    created_at: Optional[datetime] = None
-    modified_at: Optional[datetime] = None
-    created_by: str = "admin"
-    tags: List[str] = []
+# Security headers (baseline)
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    # Minimal baseline; full mTLS/JWT to be wired next
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
-class NetworkObject(BaseModel):
-    id: Optional[str] = None
-    name: str
-    type: str = Field(..., pattern=r"^(host|network|range|group)$")
-    value: str
-    description: Optional[str] = ""
-    tags: List[str] = []
-    created_at: Optional[datetime] = None
+# CORS headers function (fallback)
+def add_cors_headers(response: JSONResponse) -> JSONResponse:
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
 
-class ThreatIntelligence(BaseModel):
-    ip_address: str
-    threat_type: str
-    severity: str = Field(..., pattern=r"^(low|medium|high|critical)$")
-    reputation_score: float = Field(..., ge=0, le=100)
-    country: Optional[str] = "Unknown"
-    organization: Optional[str] = "Unknown"
-    description: Optional[str] = ""
-    first_seen: datetime
-    last_seen: datetime
+# Add OPTIONS handler for CORS preflight
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    response = JSONResponse(content={"message": "OK"})
+    return add_cors_headers(response)
 
-class SecurityPolicy(BaseModel):
-    id: Optional[str] = None
-    name: str
-    description: Optional[str] = ""
-    rules: List[str] = []  # Rule IDs
-    enabled: bool = True
-    default_action: str = Field(default="deny", pattern=r"^(allow|deny)$")
-    created_at: Optional[datetime] = None
+# WebSocket manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
 
-# ================== DATA STORAGE ==================
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
 
-# In-memory storage (in production, use database)
-firewall_rules: Dict[str, FirewallRule] = {}
-network_objects: Dict[str, NetworkObject] = {}
-security_policies: Dict[str, SecurityPolicy] = {}
-threat_intel_db: Dict[str, ThreatIntelligence] = {}
-system_logs: List[Dict[str, Any]] = []
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
 
-# WebSocket connections
-active_connections: List[WebSocket] = []
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        await websocket.send_text(message)
 
-# ================== UTILITY FUNCTIONS ==================
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except:
+                # Remove dead connections
+                self.active_connections.remove(connection)
 
-def validate_ip_address(ip: str) -> bool:
-    """Validate IP address or CIDR"""
-    if ip == "any":
-        return True
-    try:
-        ipaddress.ip_network(ip, strict=False)
-        return True
-    except ValueError:
-        return False
-
-def validate_port(port: str) -> bool:
-    """Validate port or port range"""
-    if port == "any":
-        return True
-    try:
-        if "-" in port:
-            start, end = port.split("-")
-            return 1 <= int(start) <= 65535 and 1 <= int(end) <= 65535
-        else:
-            return 1 <= int(port) <= 65535
-    except ValueError:
-        return False
-
-def generate_rule_id() -> str:
-    """Generate unique rule ID"""
-    return f"rule_{uuid.uuid4().hex[:8]}"
-
-def log_activity(action: str, details: Dict[str, Any]):
-    """Log system activity"""
-    log_entry = {
-        "timestamp": datetime.now().isoformat(),
-        "action": action,
-        "details": details,
-        "user": "admin"  # In production, get from auth context
-    }
-    system_logs.append(log_entry)
-    
-    # Keep only last 1000 logs
-    if len(system_logs) > 1000:
-        system_logs[:] = system_logs[-1000:]
-
-# ================== REAL SYSTEM CONTROL API ==================
-
-@app.post("/api/system/start")
-async def start_firewall_engine() -> Dict[str, Any]:
-    """Start the firewall engine (VPP + eBPF)"""
-    if not system_control:
-        raise HTTPException(status_code=503, detail="System control not available")
-    
-    result = await system_control.start_firewall_engine()
-    
-    log_activity("firewall_engine_start", result)
-    
-    # Broadcast update to WebSocket clients
-    await broadcast_update({
-        "type": "system_status_changed",
-        "status": result
-    })
-    
-    return result
-
-@app.post("/api/system/stop")
-async def stop_firewall_engine() -> Dict[str, Any]:
-    """Stop the firewall engine"""
-    if not system_control:
-        raise HTTPException(status_code=503, detail="System control not available")
-    
-    result = await system_control.stop_firewall_engine()
-    
-    log_activity("firewall_engine_stop", result)
-    
-    # Broadcast update to WebSocket clients
-    await broadcast_update({
-        "type": "system_status_changed",
-        "status": result
-    })
-    
-    return result
-
-@app.get("/api/system/status")
-async def get_system_status() -> Dict[str, Any]:
-    """Get comprehensive system status"""
-    if not system_control:
-        # Fallback status for when system control is not available
-        return {
-            "engine_status": "unavailable",
-            "protection_mode": "none",
-            "error": "System control not available",
-            "demo_mode": True
-        }
-    
-    return await system_control.get_system_status()
-
-@app.post("/api/vpp/cli")
-async def execute_vpp_command(command: Dict[str, str]) -> Dict[str, Any]:
-    """Execute VPP CLI command"""
-    if not system_control:
-        raise HTTPException(status_code=503, detail="System control not available")
-    
-    cmd = command.get("command", "")
-    if not cmd:
-        raise HTTPException(status_code=400, detail="Command is required")
-    
-    result = await system_control.execute_vpp_command(cmd)
-    
-    log_activity("vpp_cli_command", {"command": cmd, "result": result})
-    
-    return result
-
-@app.get("/api/system/info")
-async def get_system_info() -> Dict[str, Any]:
-    """Get system information"""
-    if not system_control:
-        raise HTTPException(status_code=503, detail="System control not available")
-    
-    return await system_control.get_system_info()
-
-@app.get("/api/vpp/status")
-async def get_vpp_status() -> Dict[str, Any]:
-    """Get VPP status"""
-    if not system_control:
-        raise HTTPException(status_code=503, detail="System control not available")
-    
-    return await system_control.get_vpp_status()
-
-@app.get("/api/ebpf/status")
-async def get_ebpf_status() -> Dict[str, Any]:
-    """Get eBPF status"""
-    if not system_control:
-        raise HTTPException(status_code=503, detail="System control not available")
-    
-    return await system_control.get_ebpf_status()
-
-@app.get("/api/network/statistics")
-async def get_network_statistics() -> Dict[str, Any]:
-    """Get network statistics"""
-    if not system_control:
-        raise HTTPException(status_code=503, detail="System control not available")
-    
-    return await system_control.get_network_statistics()
-
-# ================== WEBSOCKET MANAGEMENT ==================
+manager = ConnectionManager()
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    active_connections.append(websocket)
-    
+    await manager.connect(websocket)
     try:
+        # Heartbeat push: periodically send status to keep WS alive
         while True:
-            # Send real-time updates
-            data = await get_realtime_data()
-            await websocket.send_text(json.dumps(data))
-            await asyncio.sleep(2)
-            
-    except WebSocketDisconnect:
-        active_connections.remove(websocket)
-
-async def broadcast_update(message: Dict[str, Any]):
-    """Broadcast update to all connected clients"""
-    if active_connections:
-        message_str = json.dumps(message)
-        for connection in active_connections.copy():
+            # Determine running state and stats from the available manager
+            running = False
+            stats_dict = {
+                "packets_processed": 0,
+                "packets_dropped": 0,
+                "bytes_processed": 0,
+            }
             try:
-                await connection.send_text(message_str)
-            except:
-                active_connections.remove(connection)
+                if hasattr(firewall_manager, 'is_loaded'):
+                    running = bool(firewall_manager.is_loaded())
+                if hasattr(firewall_manager, 'get_stats'):
+                    s = firewall_manager.get_stats()
+                    stats_dict = s if isinstance(s, dict) else getattr(s, '__dict__', stats_dict)
+            except Exception:
+                # keep defaults on error
+                pass
 
-# ================== FIREWALL RULES API ==================
-
-@app.get("/api/firewall/rules")
-async def get_firewall_rules(
-    enabled: Optional[bool] = None,
-    protocol: Optional[str] = None,
-    action: Optional[str] = None,
-    tag: Optional[str] = None
-) -> List[Dict[str, Any]]:
-    """Get firewall rules with filtering"""
-    rules = list(firewall_rules.values())
-    
-    # Apply filters
-    if enabled is not None:
-        rules = [r for r in rules if r.enabled == enabled]
-    if protocol:
-        rules = [r for r in rules if r.protocol == protocol]
-    if action:
-        rules = [r for r in rules if r.action == action]
-    if tag:
-        rules = [r for r in rules if tag in r.tags]
-    
-    # Sort by priority
-    rules.sort(key=lambda x: x.priority)
-    
-    return [r.dict() for r in rules]
-
-@app.post("/api/firewall/rules")
-async def create_firewall_rule(rule: FirewallRule) -> Dict[str, Any]:
-    """Create new firewall rule"""
-    # Validate inputs
-    if not validate_ip_address(rule.source_ip):
-        raise HTTPException(status_code=400, detail="Invalid source IP")
-    if not validate_ip_address(rule.dest_ip):
-        raise HTTPException(status_code=400, detail="Invalid destination IP")
-    if not validate_port(rule.source_port):
-        raise HTTPException(status_code=400, detail="Invalid source port")
-    if not validate_port(rule.dest_port):
-        raise HTTPException(status_code=400, detail="Invalid destination port")
-    
-    # Generate ID and timestamps
-    rule.id = generate_rule_id()
-    rule.created_at = datetime.now()
-    rule.modified_at = datetime.now()
-    
-    # Store rule
-    firewall_rules[rule.id] = rule
-    
-    # Apply rule to real system if available
-    if system_control:
-        await system_control.apply_firewall_rule(rule.dict())
-    
-    # Log activity
-    log_activity("rule_created", {"rule_id": rule.id, "name": rule.name})
-    
-    # Broadcast update
-    await broadcast_update({
-        "type": "rule_created",
-        "rule": rule.dict()
-    })
-    
-    return {"status": "success", "rule_id": rule.id, "message": "Rule created successfully"}
-
-@app.put("/api/firewall/rules/{rule_id}")
-async def update_firewall_rule(rule_id: str, rule: FirewallRule) -> Dict[str, Any]:
-    """Update existing firewall rule"""
-    if rule_id not in firewall_rules:
-        raise HTTPException(status_code=404, detail="Rule not found")
-    
-    # Validate inputs
-    if not validate_ip_address(rule.source_ip):
-        raise HTTPException(status_code=400, detail="Invalid source IP")
-    if not validate_ip_address(rule.dest_ip):
-        raise HTTPException(status_code=400, detail="Invalid destination IP")
-    if not validate_port(rule.source_port):
-        raise HTTPException(status_code=400, detail="Invalid source port")
-    if not validate_port(rule.dest_port):
-        raise HTTPException(status_code=400, detail="Invalid destination port")
-    
-    # Update rule
-    rule.id = rule_id
-    rule.modified_at = datetime.now()
-    rule.created_at = firewall_rules[rule_id].created_at  # Preserve original creation time
-    
-    firewall_rules[rule_id] = rule
-    
-    # Apply rule to real system if available
-    if system_control:
-        await system_control.apply_firewall_rule(rule.dict())
-    
-    # Log activity
-    log_activity("rule_updated", {"rule_id": rule_id, "name": rule.name})
-    
-    # Broadcast update
-    await broadcast_update({
-        "type": "rule_updated",
-        "rule": rule.dict()
-    })
-    
-    return {"status": "success", "message": "Rule updated successfully"}
-
-@app.delete("/api/firewall/rules/{rule_id}")
-async def delete_firewall_rule(rule_id: str) -> Dict[str, Any]:
-    """Delete firewall rule"""
-    if rule_id not in firewall_rules:
-        raise HTTPException(status_code=404, detail="Rule not found")
-    
-    rule_name = firewall_rules[rule_id].name
-    del firewall_rules[rule_id]
-    
-    # Remove rule from real system if available
-    if system_control:
-        await system_control.remove_firewall_rule(rule_id)
-    
-    # Log activity
-    log_activity("rule_deleted", {"rule_id": rule_id, "name": rule_name})
-    
-    # Broadcast update
-    await broadcast_update({
-        "type": "rule_deleted",
-        "rule_id": rule_id
-    })
-    
-    return {"status": "success", "message": "Rule deleted successfully"}
-
-@app.post("/api/firewall/rules/{rule_id}/toggle")
-async def toggle_firewall_rule(rule_id: str) -> Dict[str, Any]:
-    """Toggle firewall rule enabled/disabled"""
-    if rule_id not in firewall_rules:
-        raise HTTPException(status_code=404, detail="Rule not found")
-    
-    rule = firewall_rules[rule_id]
-    rule.enabled = not rule.enabled
-    rule.modified_at = datetime.now()
-    
-    # Apply/remove rule from real system if available
-    if system_control:
-        if rule.enabled:
-            await system_control.apply_firewall_rule(rule.dict())
-        else:
-            await system_control.remove_firewall_rule(rule_id)
-    
-    # Log activity
-    log_activity("rule_toggled", {
-        "rule_id": rule_id,
-        "name": rule.name,
-        "enabled": rule.enabled
-    })
-    
-    # Broadcast update
-    await broadcast_update({
-        "type": "rule_updated",
-        "rule": rule.dict()
-    })
-    
-    return {"status": "success", "enabled": rule.enabled}
-
-@app.post("/api/firewall/rules/bulk-action")
-async def bulk_rule_action(action: str, rule_ids: List[str]) -> Dict[str, Any]:
-    """Perform bulk action on multiple rules"""
-    if action not in ["enable", "disable", "delete"]:
-        raise HTTPException(status_code=400, detail="Invalid action")
-    
-    affected_rules = []
-    
-    for rule_id in rule_ids:
-        if rule_id in firewall_rules:
-            if action == "enable":
-                firewall_rules[rule_id].enabled = True
-                firewall_rules[rule_id].modified_at = datetime.now()
-                # Apply to real system
-                if system_control:
-                    await system_control.apply_firewall_rule(firewall_rules[rule_id].dict())
-            elif action == "disable":
-                firewall_rules[rule_id].enabled = False
-                firewall_rules[rule_id].modified_at = datetime.now()
-                # Remove from real system
-                if system_control:
-                    await system_control.remove_firewall_rule(rule_id)
-            elif action == "delete":
-                # Remove from real system
-                if system_control:
-                    await system_control.remove_firewall_rule(rule_id)
-                del firewall_rules[rule_id]
-            
-            affected_rules.append(rule_id)
-    
-    # Log activity
-    log_activity("bulk_action", {
-        "action": action,
-        "rule_ids": affected_rules,
-        "count": len(affected_rules)
-    })
-    
-    # Broadcast update
-    await broadcast_update({
-        "type": "bulk_update",
-        "action": action,
-        "rule_ids": affected_rules
-    })
-    
-    return {"status": "success", "affected_rules": len(affected_rules)}
-
-# ================== NETWORK OBJECTS API ==================
-
-@app.get("/api/network/objects")
-async def get_network_objects() -> List[Dict[str, Any]]:
-    """Get all network objects"""
-    return [obj.dict() for obj in network_objects.values()]
-
-@app.post("/api/network/objects")
-async def create_network_object(obj: NetworkObject) -> Dict[str, Any]:
-    """Create network object"""
-    # Validate based on type
-    if obj.type == "host":
-        if not validate_ip_address(obj.value):
-            raise HTTPException(status_code=400, detail="Invalid IP address")
-    elif obj.type == "network":
-        if not validate_ip_address(obj.value):
-            raise HTTPException(status_code=400, detail="Invalid network CIDR")
-    
-    obj.id = f"obj_{uuid.uuid4().hex[:8]}"
-    obj.created_at = datetime.now()
-    
-    network_objects[obj.id] = obj
-    
-    log_activity("network_object_created", {"object_id": obj.id, "name": obj.name})
-    
-    return {"status": "success", "object_id": obj.id}
-
-@app.delete("/api/network/objects/{object_id}")
-async def delete_network_object(object_id: str) -> Dict[str, Any]:
-    """Delete network object"""
-    if object_id not in network_objects:
-        raise HTTPException(status_code=404, detail="Object not found")
-    
-    obj_name = network_objects[object_id].name
-    del network_objects[object_id]
-    
-    log_activity("network_object_deleted", {"object_id": object_id, "name": obj_name})
-    
-    return {"status": "success", "message": "Object deleted successfully"}
-
-# ================== THREAT INTELLIGENCE API ==================
-
-@app.get("/api/threat-intel")
-async def get_threat_intelligence() -> List[Dict[str, Any]]:
-    """Get threat intelligence data"""
-    return [threat.dict() for threat in threat_intel_db.values()]
-
-@app.post("/api/threat-intel")
-async def add_threat_intelligence(threat: ThreatIntelligence) -> Dict[str, Any]:
-    """Add threat intelligence"""
-    threat_intel_db[threat.ip_address] = threat
-    
-    log_activity("threat_intel_added", {
-        "ip": threat.ip_address,
-        "type": threat.threat_type,
-        "severity": threat.severity
-    })
-    
-    return {"status": "success", "message": "Threat intelligence added"}
-
-@app.delete("/api/threat-intel/{ip_address}")
-async def remove_threat_intelligence(ip_address: str) -> Dict[str, Any]:
-    """Remove threat intelligence"""
-    if ip_address not in threat_intel_db:
-        raise HTTPException(status_code=404, detail="Threat intelligence not found")
-    
-    del threat_intel_db[ip_address]
-    
-    log_activity("threat_intel_removed", {"ip": ip_address})
-    
-    return {"status": "success", "message": "Threat intelligence removed"}
-
-# ================== SECURITY POLICIES API ==================
-
-@app.get("/api/security/policies")
-async def get_security_policies() -> List[Dict[str, Any]]:
-    """Get security policies"""
-    return [policy.dict() for policy in security_policies.values()]
-
-@app.post("/api/security/policies")
-async def create_security_policy(policy: SecurityPolicy) -> Dict[str, Any]:
-    """Create security policy"""
-    policy.id = f"policy_{uuid.uuid4().hex[:8]}"
-    policy.created_at = datetime.now()
-    
-    security_policies[policy.id] = policy
-    
-    log_activity("policy_created", {"policy_id": policy.id, "name": policy.name})
-    
-    return {"status": "success", "policy_id": policy.id}
-
-# ================== ANALYTICS ENDPOINTS ==================
-
-@app.get("/api/analytics/live-threats")
-async def get_live_threats() -> Dict[str, Any]:
-    """Get live threat intelligence data"""
-    # Generate rich demo threats data
-    current_time = datetime.now()
-    threats = []
-    
-    attack_types = ['DDoS', 'Port Scan', 'Brute Force', 'SQL Injection', 'XSS', 'Malware', 'Phishing', 'Ransomware', 'Botnet', 'APT']
-    countries = ['CN', 'RU', 'KP', 'IR', 'US', 'DE', 'GB', 'FR', 'JP', 'BR']
-    protocols = ['TCP', 'UDP', 'ICMP', 'HTTP', 'HTTPS', 'SSH', 'FTP']
-    mitre_techniques = ['T1190', 'T1566', 'T1110', 'T1046', 'T1498', 'T1059', 'T1055', 'T1003', 'T1083', 'T1486']
-    
-    for i in range(25):
-        threat_time = current_time - timedelta(minutes=random.randint(1, 120))
-        severity = random.choices(['critical', 'high', 'medium', 'low'], weights=[10, 25, 40, 25])[0]
-        attack_type = random.choice(attack_types)
-        country = random.choice(countries)
-        
-        threats.append({
-            "id": f"threat_{i}_{int(time.time())}",
-            "timestamp": threat_time.isoformat(),
-            "sourceIp": f"{random.randint(1, 223)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 254)}",
-            "targetIp": f"192.168.1.{random.randint(1, 254)}",
-            "country": country,
-            "attackType": attack_type,
-            "severity": severity,
-            "blocked": random.choice([True, False]),
-            "confidence": random.randint(60, 99),
-            "protocol": random.choice(protocols),
-            "port": random.choice([22, 80, 443, 3389, 1433, 3306, 21, 25, 53, 8080]),
-            "status": random.choice(['active', 'blocked', 'investigating', 'resolved']),
-            "description": f"Detected {attack_type} attack from {country} targeting internal network",
-            "mitreId": random.choice(mitre_techniques) if severity in ['high', 'critical'] else None
-        })
-    
-    return {
-        "threats": threats,
-        "total_threats": len(threats),
-        "blocked_threats": sum(1 for t in threats if t["blocked"])
-    }
-
-@app.get("/api/analytics/network-flows")
-async def get_network_flows() -> Dict[str, Any]:
-    """Get network flow analytics"""
-    # Generate rich demo network flows
-    flows = []
-    services = ['HTTP', 'HTTPS', 'SSH', 'FTP', 'DNS', 'SMTP', 'MySQL', 'PostgreSQL', 'Redis', 'MongoDB']
-    countries = ['US', 'CN', 'RU', 'DE', 'GB', 'FR', 'JP', 'BR', 'IN', 'CA']
-    tcp_flags = ['SYN', 'ACK', 'FIN', 'RST', 'PSH', 'URG']
-    
-    for i in range(50):
-        flows.append({
-            "id": f"flow_{i}_{int(time.time())}",
-            "sourceIp": f"{random.randint(1, 223)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 254)}",
-            "destinationIp": f"192.168.1.{random.randint(1, 254)}",
-            "protocol": random.choice(['TCP', 'UDP', 'ICMP']),
-            "port": random.choice([80, 443, 22, 21, 25, 53, 3306, 5432, 6379, 27017]),
-            "bytesIn": random.randint(1024, 1000000),
-            "bytesOut": random.randint(512, 500000),
-            "duration": random.randint(1, 3600),
-            "suspicious": random.choice([True, False]),
-            "country": random.choice(countries),
-            "service": random.choice(services),
-            "encrypted": random.choice([True, False]),
-            "packets": random.randint(10, 10000),
-            "flags": random.sample(tcp_flags, random.randint(1, 3))
-        })
-    
-    return {
-        "flows": flows,
-        "total_flows": len(flows),
-        "total_bytes": sum(f["bytesIn"] + f["bytesOut"] for f in flows)
-    }
-
-@app.get("/api/analytics/service-metrics")
-async def get_service_metrics() -> Dict[str, Any]:
-    """Get service performance metrics"""
-    # Generate rich demo service metrics
-    services = ['Apache', 'Nginx', 'MySQL', 'PostgreSQL', 'Redis', 'MongoDB', 'SSH', 'FTP', 'DNS', 'VPN']
-    statuses = ['running', 'stopped', 'warning', 'error']
-    
-    service_data = []
-    for service in services:
-        service_data.append({
-            "service": service,
-            "status": random.choices(statuses, weights=[70, 10, 15, 5])[0],
-            "connections": random.randint(10, 1000),
-            "bandwidth": random.randint(5, 95),
-            "cpu": random.randint(1, 100),
-            "memory": random.randint(10, 90),
-            "uptime": f"{random.randint(1, 30)}d {random.randint(0, 23)}h",
-            "threats": random.randint(0, 50),
-            "blocked": random.randint(0, 20),
-            "version": f"v{random.randint(1, 5)}.{random.randint(0, 9)}.{random.randint(0, 9)}",
-            "pid": random.randint(1000, 9999)
-        })
-    
-    return {
-        "services": service_data
-    }
-
-# ================== FLOW ACTION MANAGEMENT ==================
-
-@app.post("/api/flow/action")
-async def handle_flow_action(action_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle flow action requests (block, allow, investigate, etc.)"""
-    try:
-        action_type = action_data.get("action")
-        flow_id = action_data.get("flowId")
-        source_ip = action_data.get("sourceIp")
-        destination_ip = action_data.get("destinationIp")
-        protocol = action_data.get("protocol", "any")
-        port = action_data.get("port", "any")
-        
-        if not action_type or not source_ip:
-            raise HTTPException(status_code=400, detail="Missing required parameters: action, sourceIp")
-        
-        # Process different action types
-        result = {"status": "success", "action": action_type, "message": ""}
-        
-        if action_type == "block_ip":
-            # Create a blocking rule for the IP
-            rule_name = f"Auto-Block {source_ip}"
-            blocking_rule = FirewallRule(
-                name=rule_name,
-                description=f"Automatically generated rule to block {source_ip}",
-                source_ip=source_ip,
-                dest_ip="any",
-                protocol=protocol,
-                action="deny",
-                priority=1,  # High priority for security blocks
-                tags=["auto-generated", "security", "flow-action"],
-                created_by="system"
-            )
-            
-            blocking_rule.id = generate_rule_id()
-            blocking_rule.created_at = datetime.now()
-            blocking_rule.modified_at = datetime.now()
-            firewall_rules[blocking_rule.id] = blocking_rule
-            
-            # Apply rule to real system if available
-            if system_control:
-                try:
-                    await system_control.apply_firewall_rule(blocking_rule.dict())
-                    result["message"] = f"IP {source_ip} blocked successfully and applied to VPP/eBPF"
-                except Exception as e:
-                    result["message"] = f"IP {source_ip} blocked in configuration (VPP/eBPF apply failed: {e})"
-            else:
-                result["message"] = f"IP {source_ip} blocked in configuration"
-                
-            log_activity("flow_blocked", {
-                "source_ip": source_ip,
-                "rule_id": blocking_rule.id,
-                "flow_id": flow_id
-            })
-            
-        elif action_type == "block_country":
-            country = action_data.get("country", "Unknown")
-            # Create a geo-blocking rule
-            rule_name = f"Geo-Block {country}"
-            geo_rule = FirewallRule(
-                name=rule_name,
-                description=f"Block all traffic from {country}",
-                source_ip="any",
-                dest_ip="any",
-                protocol="any",
-                action="deny",
-                priority=5,
-                geo_blocking=[country],
-                tags=["geo-blocking", "auto-generated", "security"],
-                created_by="system"
-            )
-            
-            geo_rule.id = generate_rule_id()
-            geo_rule.created_at = datetime.now()
-            geo_rule.modified_at = datetime.now()
-            firewall_rules[geo_rule.id] = geo_rule
-            
-            result["message"] = f"Country {country} blocked successfully"
-            
-            log_activity("country_blocked", {
-                "country": country,
-                "rule_id": geo_rule.id,
-                "flow_id": flow_id
-            })
-            
-        elif action_type == "investigate":
-            # Add to threat intelligence for investigation
-            threat = ThreatIntelligence(
-                ip_address=source_ip,
-                threat_type="suspicious_activity",
-                severity="medium",
-                reputation_score=50.0,
-                description=f"IP flagged for investigation from flow {flow_id}",
-                first_seen=datetime.now(),
-                last_seen=datetime.now()
-            )
-            threat_intel_db[source_ip] = threat
-            
-            result["message"] = f"IP {source_ip} added to investigation queue"
-            
-            log_activity("flow_investigated", {
-                "source_ip": source_ip,
-                "flow_id": flow_id
-            })
-            
-        elif action_type == "quarantine":
-            # Create quarantine rule with limited access
-            rule_name = f"Quarantine {source_ip}"
-            quarantine_rule = FirewallRule(
-                name=rule_name,
-                description=f"Quarantine {source_ip} - limited access only",
-                source_ip=source_ip,
-                dest_port="80,443,53",  # Only basic web and DNS
-                protocol="tcp",
-                action="allow",
-                priority=10,
-                rate_limit=100,  # Rate limit the connection
-                tags=["quarantine", "auto-generated", "security"],
-                created_by="system"
-            )
-            
-            quarantine_rule.id = generate_rule_id()
-            quarantine_rule.created_at = datetime.now()
-            quarantine_rule.modified_at = datetime.now()
-            firewall_rules[quarantine_rule.id] = quarantine_rule
-            
-            result["message"] = f"IP {source_ip} quarantined with limited access"
-            
-            log_activity("flow_quarantined", {
-                "source_ip": source_ip,
-                "rule_id": quarantine_rule.id,
-                "flow_id": flow_id
-            })
-            
-        elif action_type == "redirect_honeypot":
-            # Create redirect rule to honeypot
-            honeypot_ip = "192.168.100.1"  # Honeypot server
-            rule_name = f"Honeypot Redirect {source_ip}"
-            redirect_rule = FirewallRule(
-                name=rule_name,
-                description=f"Redirect {source_ip} traffic to honeypot for analysis",
-                source_ip=source_ip,
-                dest_ip=honeypot_ip,
-                protocol="any",
-                action="allow",
-                priority=1,
-                tags=["honeypot", "redirect", "auto-generated"],
-                created_by="system"
-            )
-            
-            redirect_rule.id = generate_rule_id()
-            redirect_rule.created_at = datetime.now()
-            redirect_rule.modified_at = datetime.now()
-            firewall_rules[redirect_rule.id] = redirect_rule
-            
-            result["message"] = f"IP {source_ip} redirected to honeypot for analysis"
-            
-            log_activity("flow_redirected", {
-                "source_ip": source_ip,
-                "honeypot_ip": honeypot_ip,
-                "rule_id": redirect_rule.id,
-                "flow_id": flow_id
-            })
-            
-        elif action_type == "rate_limit":
-            # Apply rate limiting
-            limit = action_data.get("limit", 100)
-            rule_name = f"Rate Limit {source_ip}"
-            rate_rule = FirewallRule(
-                name=rule_name,
-                description=f"Rate limit {source_ip} to {limit} connections/sec",
-                source_ip=source_ip,
-                dest_ip="any",
-                protocol="any",
-                action="allow",
-                priority=20,
-                rate_limit=limit,
-                tags=["rate-limit", "auto-generated"],
-                created_by="system"
-            )
-            
-            rate_rule.id = generate_rule_id()
-            rate_rule.created_at = datetime.now()
-            rate_rule.modified_at = datetime.now()
-            firewall_rules[rate_rule.id] = rate_rule
-            
-            result["message"] = f"Rate limiting applied to {source_ip}: {limit} conn/sec"
-            
-            log_activity("flow_rate_limited", {
-                "source_ip": source_ip,
-                "limit": limit,
-                "rule_id": rate_rule.id,
-                "flow_id": flow_id
-            })
-            
-        elif action_type == "whitelist":
-            # Add to whitelist
-            rule_name = f"Whitelist {source_ip}"
-            whitelist_rule = FirewallRule(
-                name=rule_name,
-                description=f"Whitelist {source_ip} - trusted source",
-                source_ip=source_ip,
-                dest_ip="any",
-                protocol="any",
-                action="allow",
-                priority=1,
-                tags=["whitelist", "trusted", "auto-generated"],
-                created_by="system"
-            )
-            
-            whitelist_rule.id = generate_rule_id()
-            whitelist_rule.created_at = datetime.now()
-            whitelist_rule.modified_at = datetime.now()
-            firewall_rules[whitelist_rule.id] = whitelist_rule
-            
-            result["message"] = f"IP {source_ip} added to whitelist"
-            
-            log_activity("flow_whitelisted", {
-                "source_ip": source_ip,
-                "rule_id": whitelist_rule.id,
-                "flow_id": flow_id
-            })
-            
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown action type: {action_type}")
-        
-        # Broadcast update to connected clients
-        await broadcast_update({
-            "type": "flow_action",
-            "data": result
-        })
-        
-        return result
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error handling flow action: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.get("/api/flow/actions")
-async def get_available_flow_actions() -> Dict[str, Any]:
-    """Get available flow actions and their descriptions"""
-    return {
-        "actions": [
-            {
-                "id": "block_ip",
-                "name": "Block IP Immediately",
-                "description": "Create a firewall rule to block this IP address",
-                "icon": "🚫",
-                "severity": "high",
-                "requires_confirmation": True
-            },
-            {
-                "id": "block_country",
-                "name": "Block Entire Country",
-                "description": "Block all traffic from this country",
-                "icon": "🌍",
-                "severity": "high",
-                "requires_confirmation": True
-            },
-            {
-                "id": "investigate",
-                "name": "Deep Investigation",
-                "description": "Add to threat intelligence for further analysis",
-                "icon": "🔍",
-                "severity": "medium",
-                "requires_confirmation": False
-            },
-            {
-                "id": "quarantine",
-                "name": "Quarantine & Isolate",
-                "description": "Limit access to essential services only",
-                "icon": "🔒",
-                "severity": "medium",
-                "requires_confirmation": True
-            },
-            {
-                "id": "redirect_honeypot",
-                "name": "Redirect to Honeypot",
-                "description": "Redirect traffic to honeypot for analysis",
-                "icon": "🍯",
-                "severity": "medium",
-                "requires_confirmation": False
-            },
-            {
-                "id": "rate_limit",
-                "name": "Apply Rate Limiting",
-                "description": "Limit connection rate from this source",
-                "icon": "⏱️",
-                "severity": "low",
-                "requires_confirmation": False
-            },
-            {
-                "id": "whitelist",
-                "name": "Allow & Add to Whitelist",
-                "description": "Mark as trusted source",
-                "icon": "✅",
-                "severity": "low",
-                "requires_confirmation": False
+            payload = {
+                "type": "status",
+                "mode": preflight_manager.get_mode(),
+                "rules_count": len(preflight_manager.get_current_rules()),
+                "timestamp": datetime.now(UTC).isoformat(),
+                "firewall": {
+                    "engine_status": "running" if running else "inactive",
+                    "packets_processed": stats_dict.get("packets_processed", 0),
+                    "packets_blocked": stats_dict.get("packets_dropped", 0),
+                    "interface": getattr(firewall_manager, 'interface', 'eth0'),
+                    "engine_state": getattr(firewall_manager, 'engine_state', 'auto')
+                },
+                "data": {
+                    "interfaces": _list_network_interfaces(),
+                    "system_info": _system_info(),
+                },
+                "system": {
+                    "uptime": int((datetime.now(UTC) - start_time).total_seconds()),
+                    "cpu_usage": stats_dict.get("cpu_usage", 0.0),
+                    "memory_total": _system_info().get("total_memory", 0),
+                    "memory_used": _system_info().get("used_memory", 0),
+                }
             }
-        ]
-    }
+            await websocket.send_text(json.dumps(payload))
+            await asyncio.sleep(2)
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception:
+        manager.disconnect(websocket)
 
-# ================== ANALYTICS AND REPORTING ==================
+# Simple data classes (no pydantic)
+class ModeRequest:
+    def __init__(self, mode: str):
+        self.mode = mode
+    
+    @classmethod
+    def from_dict(cls, data: dict):
+        # Normalize NONE->simulation for UX backward-compat
+        mode = data.get("mode", "simulation").lower()
+        if mode in ("none", "none mode", "none_mode"):
+            mode = "simulation"
+        return cls(mode=mode)
 
-@app.get("/api/analytics/rule-usage")
-async def get_rule_usage_analytics() -> Dict[str, Any]:
-    """Get rule usage analytics"""
-    total_rules = len(firewall_rules)
-    enabled_rules = sum(1 for r in firewall_rules.values() if r.enabled)
+class ModeResponse:
+    def __init__(self, mode: str, message: str, success: bool):
+        self.mode = mode
+        self.message = message
+        self.success = success
     
-    # Protocol distribution
-    protocol_stats = {}
-    for rule in firewall_rules.values():
-        protocol_stats[rule.protocol] = protocol_stats.get(rule.protocol, 0) + 1
-    
-    # Action distribution
-    action_stats = {}
-    for rule in firewall_rules.values():
-        action_stats[rule.action] = action_stats.get(rule.action, 0) + 1
-    
-    return {
-        "summary": {
-            "total_rules": total_rules,
-            "enabled_rules": enabled_rules,
-            "disabled_rules": total_rules - enabled_rules,
-            "utilization_rate": (enabled_rules / total_rules * 100) if total_rules > 0 else 0
-        },
-        "protocol_distribution": protocol_stats,
-        "action_distribution": action_stats,
-        "top_rules": [
-            {
-                "id": rule.id,
-                "name": rule.name,
-                "priority": rule.priority,
-                "enabled": rule.enabled
-            }
-            for rule in sorted(firewall_rules.values(), key=lambda x: x.priority)[:10]
-        ]
-    }
-
-@app.get("/api/analytics/security-events")
-async def get_security_events() -> Dict[str, Any]:
-    """Get security events analytics"""
-    # Generate mock security events
-    current_time = datetime.now()
-    events = []
-    
-    for i in range(50):
-        event_time = current_time - timedelta(minutes=random.randint(1, 1440))
-        events.append({
-            "timestamp": event_time.isoformat(),
-            "type": random.choice(["intrusion_attempt", "port_scan", "brute_force", "malware", "ddos"]),
-            "severity": random.choice(["low", "medium", "high", "critical"]),
-            "source_ip": f"192.168.{random.randint(1, 255)}.{random.randint(1, 255)}",
-            "target_ip": f"10.0.{random.randint(1, 255)}.{random.randint(1, 255)}",
-            "blocked": random.choice([True, False]),
-            "rule_id": random.choice(list(firewall_rules.keys())) if firewall_rules else None
-        })
-    
-    return {
-        "events": events,
-        "summary": {
-            "total_events": len(events),
-            "blocked_events": sum(1 for e in events if e["blocked"]),
-            "critical_events": sum(1 for e in events if e["severity"] == "critical"),
-            "top_attack_types": {
-                "intrusion_attempt": sum(1 for e in events if e["type"] == "intrusion_attempt"),
-                "port_scan": sum(1 for e in events if e["type"] == "port_scan"),
-                "brute_force": sum(1 for e in events if e["type"] == "brute_force")
-            }
-        }
-    }
-
-@app.get("/api/analytics/performance")
-async def get_performance_analytics() -> Dict[str, Any]:
-    """Get firewall performance analytics"""
-    # Get system metrics
-    cpu_percent = psutil.cpu_percent(interval=1)
-    memory = psutil.virtual_memory()
-    
-    return {
-        "system_performance": {
-            "cpu_usage": cpu_percent,
-            "memory_usage": memory.percent,
-            "memory_total": memory.total,
-            "memory_available": memory.available,
-            "load_average": list(psutil.getloadavg()) if hasattr(psutil, 'getloadavg') else [0, 0, 0]
-        },
-        "firewall_performance": {
-            "rules_processed_per_second": random.randint(10000, 50000),
-            "packets_per_second": random.randint(100000, 500000),
-            "latency_ms": round(random.uniform(0.1, 2.0), 2),
-            "throughput_mbps": random.randint(100, 1000),
-            "rule_evaluation_time_ns": random.randint(100, 1000)
-        },
-        "optimization_suggestions": [
-            "Consider consolidating similar rules to improve performance",
-            "Review disabled rules for potential removal",
-            "Optimize rule priority order for better matching efficiency"
-        ]
-    }
-
-# ================== CONFIGURATION MANAGEMENT ==================
-
-@app.get("/api/config/export")
-async def export_configuration() -> Dict[str, Any]:
-    """Export complete firewall configuration"""
-    config = {
-        "version": "2.0.0",
-        "exported_at": datetime.now().isoformat(),
-        "firewall_rules": [rule.dict() for rule in firewall_rules.values()],
-        "network_objects": [obj.dict() for obj in network_objects.values()],
-        "security_policies": [policy.dict() for policy in security_policies.values()],
-        "threat_intelligence": [threat.dict() for threat in threat_intel_db.values()]
-    }
-    
-    log_activity("config_exported", {"rules_count": len(firewall_rules)})
-    
-    return config
-
-@app.post("/api/config/import")
-async def import_configuration(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Import firewall configuration"""
-    try:
-        imported_rules = 0
-        imported_objects = 0
-        
-        # Import firewall rules
-        if "firewall_rules" in config:
-            for rule_data in config["firewall_rules"]:
-                rule = FirewallRule(**rule_data)
-                if not rule.id:
-                    rule.id = generate_rule_id()
-                firewall_rules[rule.id] = rule
-                imported_rules += 1
-        
-        # Import network objects
-        if "network_objects" in config:
-            for obj_data in config["network_objects"]:
-                obj = NetworkObject(**obj_data)
-                if not obj.id:
-                    obj.id = f"obj_{uuid.uuid4().hex[:8]}"
-                network_objects[obj.id] = obj
-                imported_objects += 1
-        
-        log_activity("config_imported", {
-            "rules_imported": imported_rules,
-            "objects_imported": imported_objects
-        })
-        
+    def dict(self):
         return {
-            "status": "success",
-            "imported_rules": imported_rules,
-            "imported_objects": imported_objects
+            "mode": self.mode,
+            "message": self.message,
+            "success": self.success
         }
+
+class RuleRequest:
+    def __init__(self, id: str, action: str, src_ip: str, dst_ip: str = "0.0.0.0/0",
+                 src_port: str = "any", dst_port: str = "any", protocol: str = "any",
+                 description: str = "", enabled: bool = True, log: bool = False,
+                 log_prefix: str = "", rate_limit: Optional[str] = None):
+        self.id = id
+        self.action = action
+        self.src_ip = src_ip
+        self.dst_ip = dst_ip
+        self.src_port = src_port
+        self.dst_port = dst_port
+        self.protocol = protocol
+        self.description = description
+        self.enabled = enabled
+        self.log = log
+        self.log_prefix = log_prefix
+        self.rate_limit = rate_limit
+    
+    @classmethod
+    def from_dict(cls, data: dict):
+        return cls(
+            id=data.get("id", ""),
+            action=data.get("action", "allow"),
+            src_ip=data.get("src_ip", "0.0.0.0/0"),
+            dst_ip=data.get("dst_ip", "0.0.0.0/0"),
+            src_port=data.get("src_port", "any"),
+            dst_port=data.get("dst_port", "any"),
+            protocol=data.get("protocol", "any"),
+            description=data.get("description", ""),
+            enabled=data.get("enabled", True),
+            log=data.get("log", False),
+            log_prefix=data.get("log_prefix", ""),
+            rate_limit=data.get("rate_limit")
+        )
+    
+    def dict(self):
+        return {
+            "id": self.id,
+            "action": self.action,
+            "src_ip": self.src_ip,
+            "dst_ip": self.dst_ip,
+            "src_port": self.src_port,
+            "dst_port": self.dst_port,
+            "protocol": self.protocol,
+            "description": self.description,
+            "enabled": self.enabled,
+            "log": self.log,
+            "log_prefix": self.log_prefix,
+            "rate_limit": self.rate_limit
+        }
+
+class RulesRequest:
+    def __init__(self, rules: List[RuleRequest]):
+        self.rules = rules
+    
+    @classmethod
+    def from_dict(cls, data: dict):
+        rules = [RuleRequest.from_dict(rule) for rule in data.get("rules", [])]
+        return cls(rules=rules)
+
+class PreflightRequest:
+    def __init__(self, rules: List[RuleRequest]):
+        self.rules = rules
+    
+    @classmethod
+    def from_dict(cls, data: dict):
+        rules = [RuleRequest.from_dict(rule) for rule in data.get("rules", [])]
+        return cls(rules=rules)
+
+class PreflightResponse:
+    def __init__(self, success: bool, message: str, details: Dict):
+        self.success = success
+        self.message = message
+        self.details = details
+    
+    def dict(self):
+        return {
+            "success": self.success,
+            "message": self.message,
+            "details": self.details
+        }
+
+class HealthResponse:
+    def __init__(self, status: str, mode: str, rules_count: int, uptime: str, timestamp: str):
+        self.status = status
+        self.mode = mode
+        self.rules_count = rules_count
+        self.uptime = uptime
+        self.timestamp = timestamp
+    
+    def dict(self):
+        return {
+            "status": self.status,
+            "mode": self.mode,
+            "rules_count": self.rules_count,
+            "uptime": self.uptime,
+            "timestamp": self.timestamp
+        }
+
+class EventResponse:
+    def __init__(self, events: List[Dict]):
+        self.events = events
+    
+    def dict(self):
+        return {"events": self.events}
+
+class LogsResponse:
+    def __init__(self, logs: List[str]):
+        self.logs = logs
+    
+    def dict(self):
+        return {"logs": self.logs}
+
+# Global variables
+# Initialize start time
+start_time = datetime.now(UTC)
+current_config: dict = {}
+# Simple cache for PPS estimation
+_last_pps_sample = {"ts": 0.0, "pkts": 0}
+geo_blocked_countries: list[str] = []
+_flow_first_seen: dict[tuple, float] = {}
+_geo_cache: dict[str, str | None] = {}
+
+# Helper functions
+def log_audit_event(event: str, user: str = "api"):
+    """Log audit event to immutable log."""
+    try:
+        timestamp = datetime.utcnow().isoformat()
+        log_entry = f"{timestamp} AUDIT: {event} by {user}"
+        
+        # In production: write to /var/log/cerberus/audit.log with chattr handling
+        logger.info(log_entry)
+        
+        # Mock: write to file
+        with open("/tmp/cerberus_audit.log", "a") as f:
+            f.write(log_entry + "\n")
+    except Exception as e:
+        logger.error(f"Failed to log audit event: {e}")
+
+# API Endpoints
+@app.post("/api/policy/compile")
+async def compile_policy(request: dict):
+    """Compile incoming DSL to eBPF/VPP plan (MVP via local compiler)."""
+    try:
+        spec = request
+        # Write to temp and call our compiler
+        tmp_dir = Path("/tmp/cerberus_dsl"); tmp_dir.mkdir(exist_ok=True)
+        tmp_file = tmp_dir / "policy.json"
+        with open(tmp_file, "w") as f:
+            json.dump(spec, f)
+        # Use our in-repo compiler if available
+        compiler = Path(__file__).resolve().parents[2] / "dsl" / "compiler" / "dsl_compiler.py"
+        if compiler.exists():
+            out = subprocess.run([sys.executable, str(compiler), str(tmp_file)], capture_output=True, text=True)
+            if out.returncode != 0:
+                raise RuntimeError(out.stderr or out.stdout)
+            plan = json.loads(out.stdout or "{}")
+        else:
+            plan = {"vpp_acl": [], "lpm_tries": {"src": [], "dst": []}}
+        return add_cors_headers(JSONResponse(content={"success": True, "plan": plan}))
+    except Exception as e:
+        logger.error(f"Policy compile failed: {e}")
+        return add_cors_headers(JSONResponse(content={"success": False, "error": str(e)}, status_code=500))
+
+@app.post("/api/policy/apply")
+async def apply_policy(request: dict):
+    """Apply compiled plan in simulation/live (MVP wires to preflight + save)."""
+    try:
+        mode = (request.get("mode") or "simulation").lower()
+        plan = request.get("plan") or {}
+        # For MVP we just record the plan and set mode gate via preflight manager
+        _ = plan  # reserved for future: 2PC into BPF/VPP
+        ok, msg = preflight_manager.set_mode("live" if mode == "live" else "simulation")
+        if not ok:
+            return add_cors_headers(JSONResponse(content={"success": False, "message": msg}, status_code=400))
+        log_audit_event(f"Policy applied in {mode} mode")
+        return add_cors_headers(JSONResponse(content={"success": True, "message": f"Applied in {mode}"}))
+    except Exception as e:
+        logger.error(f"Policy apply failed: {e}")
+        return add_cors_headers(JSONResponse(content={"success": False, "error": str(e)}, status_code=500))
+
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    return {"message": "Cerberus-V API", "version": "1.0.0", "status": "operational"}
+
+@app.get("/api/mode")
+async def get_mode():
+    """Get current mode."""
+    try:
+        mode = preflight_manager.get_mode()
+        response_data = ModeResponse(
+            mode=mode,
+            message=f"Current mode: {mode}",
+            success=True
+        )
+        
+        response = JSONResponse(content=response_data.dict())
+        return add_cors_headers(response)
         
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Import failed: {str(e)}")
+        logger.error(f"Failed to get mode: {e}")
+        error_response = JSONResponse(
+            content={"error": str(e)},
+            status_code=500
+        )
+        return add_cors_headers(error_response)
 
-# ================== SYSTEM LOGS API ==================
+@app.post("/api/mode")
+async def set_mode(request: dict):
+    """Set mode with preflight check."""
+    try:
+        mode_req = ModeRequest.from_dict(request)
+        success, message = preflight_manager.set_mode(mode_req.mode)
+        
+        if success:
+            log_audit_event(f"Mode changed to {mode_req.mode}")
+            return ModeResponse(
+                mode=mode_req.mode,
+                message=message,
+                success=True
+            ).dict()
+        else:
+            raise HTTPException(status_code=400, detail=message)
+            
+    except Exception as e:
+        logger.error(f"Failed to set mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/rules")
+async def get_rules():
+    """Get current rules."""
+    try:
+        rules = preflight_manager.get_current_rules()
+        response_data = {
+            "rules": rules,
+            "count": len(rules)
+        }
+        
+        response = JSONResponse(content=response_data)
+        return add_cors_headers(response)
+        
+    except Exception as e:
+        logger.error(f"Failed to get rules: {e}")
+        error_response = JSONResponse(
+            content={"error": str(e)},
+            status_code=500
+        )
+        return add_cors_headers(error_response)
+
+@app.post("/api/rules")
+async def set_rules(request: dict):
+    """Set firewall rules with preflight check."""
+    try:
+        rules_data = request.get("rules", [])
+        
+        # Convert to FirewallRule objects
+        rules = []
+        for rule_data in rules_data:
+            rules.append(rule_data)  # Keep as dict for now
+        
+        # Preflight check
+        success, message, details = preflight_manager.dry_run_rules(rules)
+        if not success:
+            error_response = JSONResponse(
+                content={"success": False, "message": message},
+                status_code=400
+            )
+            return add_cors_headers(error_response)
+        
+        # Apply rules
+        success, message = preflight_manager.apply_rules(rules_data)
+        if not success:
+            error_response = JSONResponse(
+                content={"success": False, "message": message},
+                status_code=500
+            )
+            return add_cors_headers(error_response)
+        
+        # Log audit event
+        log_audit_event(f"Rules updated: {len(rules)} rules applied")
+        
+        response_data = {
+            "message": message,
+            "success": True,
+            "rules_count": len(preflight_manager.get_current_rules())
+        }
+        
+        response = JSONResponse(content=response_data)
+        return add_cors_headers(response)
+        
+    except Exception as e:
+        logger.error(f"Failed to set rules: {e}")
+        error_response = JSONResponse(
+            content={"success": False, "message": str(e)},
+            status_code=500
+        )
+        return add_cors_headers(error_response)
+
+@app.post("/api/preflight")
+async def preflight_check(request: dict):
+    """Preflight check for rules."""
+    try:
+        rules_data = request.get("rules", [])
+        
+        # Convert to FirewallRule objects
+        rules = []
+        for rule_data in rules_data:
+            rules.append(rule_data)  # Keep as dict for now
+        
+        # Perform preflight check
+        success, message, details = preflight_manager.dry_run_rules(rules)
+        
+        response_data = PreflightResponse(
+            success=success,
+            message=message,
+            details=details
+        )
+        
+        response = JSONResponse(content=response_data.dict())
+        return add_cors_headers(response)
+        
+    except Exception as e:
+        logger.error(f"Preflight check failed: {e}")
+        error_response = JSONResponse(
+            content={"success": False, "message": str(e)},
+            status_code=500
+        )
+        return add_cors_headers(error_response)
+
+@app.post("/api/rollback")
+async def rollback_rules():
+    """Rollback to previous state."""
+    try:
+        success, message = preflight_manager.rollback_rules()
+        
+        if success:
+            log_audit_event("Rules rolled back to previous state")
+        
+        response_data = {
+            "message": message,
+            "success": success
+        }
+        
+        response = JSONResponse(content=response_data)
+        return add_cors_headers(response)
+        
+    except Exception as e:
+        logger.error(f"Rollback failed: {e}")
+        error_response = JSONResponse(
+            content={"success": False, "message": str(e)},
+            status_code=500
+        )
+        return add_cors_headers(error_response)
+
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint."""
+    try:
+        current_time = datetime.now(UTC)
+        uptime = current_time - start_time
+        
+        health_data = HealthResponse(
+            status="healthy",
+            mode=preflight_manager.get_mode(),
+            rules_count=len(preflight_manager.get_current_rules()),
+            uptime=str(uptime),
+            timestamp=current_time.isoformat()
+        )
+        
+        response = JSONResponse(content=health_data.dict())
+        return add_cors_headers(response)
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        error_response = JSONResponse(
+            content={"status": "unhealthy", "error": str(e)},
+            status_code=500
+        )
+        return add_cors_headers(error_response)
+
+@app.get("/api/events")
+async def get_events():
+    """Get recent events."""
+    try:
+        # Mock events for now
+        events = [
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "level": "info",
+                "message": "System started",
+                "source": "cerberus-v"
+            },
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "level": "info", 
+                "message": f"Mode: {preflight_manager.get_mode()}",
+                "source": "cerberus-v"
+            },
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "level": "info",
+                "message": f"Active rules: {len(preflight_manager.get_current_rules())}",
+                "source": "cerberus-v"
+            }
+        ]
+        
+        response_data = {"events": events}
+        response = JSONResponse(content=response_data)
+        return add_cors_headers(response)
+        
+    except Exception as e:
+        logger.error(f"Failed to get events: {e}")
+        error_response = JSONResponse(
+            content={"error": str(e)},
+            status_code=500
+        )
+        return add_cors_headers(error_response)
 
 @app.get("/api/logs")
-async def get_system_logs(limit: int = 100) -> List[Dict[str, Any]]:
-    """Get system activity logs"""
-    return system_logs[-limit:]
+async def get_logs():
+    """Get recent logs."""
+    try:
+        # Mock logs for now
+        logs = [
+            f"[{datetime.now(UTC).isoformat()}] INFO: Cerberus-V API started",
+            f"[{datetime.now(UTC).isoformat()}] INFO: Mode: {preflight_manager.get_mode()}",
+            f"[{datetime.now(UTC).isoformat()}] INFO: Rules count: {len(preflight_manager.get_current_rules())}",
+            f"[{datetime.now(UTC).isoformat()}] INFO: WebSocket connections: {len(manager.active_connections)}"
+        ]
+        
+        response_data = {"logs": logs}
+        response = JSONResponse(content=response_data)
+        return add_cors_headers(response)
+    except Exception as e:
+        logger.error(f"Failed to get logs: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
 
-# ================== REAL-TIME DATA ==================
+# -------- Analytics (MVP synthetic backed by system status) --------
+@app.get("/api/analytics/live-threats")
+async def analytics_live_threats():
+    """Return live threats derived from active flows (heuristic)."""
+    try:
+        flows = _collect_flows()
+        sensitive_ports = {22, 23, 3389, 5900, 25}
+        src_counter: dict[str, int] = {}
+        for f in flows:
+            src_counter[f["src_ip"]] = src_counter.get(f["src_ip"], 0) + 1
+        from mitre import map_attack  # local mapping
+        threats = []
+        for idx, f in enumerate(flows):
+            sev = "low"
+            attack = "scan"
+            if f["dport"] in sensitive_ports:
+                sev = "high"; attack = "service-bruteforce"
+            if src_counter.get(f["src_ip"], 0) > 20:
+                sev = "critical"; attack = "port-scan"
+            # country + MITRE enrichment
+            country = _geo_country(f["src_ip"]) or "N/A"
+            mitre = map_attack(attack)
+            threats.append({
+                "id": f"T{idx:04d}",
+                "timestamp": datetime.now(UTC).isoformat(),
+                "sourceIp": f["src_ip"],
+                "targetIp": f["dst_ip"],
+                "country": country,
+                "attackType": attack,
+                "severity": sev,
+                "blocked": False,
+                "confidence": 75,
+                "protocol": f["proto"],
+                "port": f["dport"],
+                "status": "active",
+                "mitreId": mitre.get("techniqueId"),
+                "mitreTactic": mitre.get("tactic"),
+                "mitreTechnique": mitre.get("technique"),
+            })
+        return add_cors_headers(JSONResponse(content={"threats": threats[:100]}))
+    except Exception as e:
+        logger.error(f"Analytics live-threats failed: {e}")
+        return add_cors_headers(JSONResponse(content={"threats": []}, status_code=500))
 
-async def get_realtime_data() -> Dict[str, Any]:
-    """Get real-time system data from VPP/eBPF"""
-    current_time = time.time()
-    
-    # Get real system status if available
-    if system_control:
+@app.get("/api/analytics/network-flows")
+async def analytics_network_flows():
+    """Return list of active network flows using ss (safe, no capture)."""
+    try:
+        flows = _collect_flows()
+        res = []
+        now = datetime.now(UTC).timestamp()
+        for i, f in enumerate(flows[:200]):
+            key = (f["proto"], f["src_ip"], f["dst_ip"], int(f.get("dport",0)))
+            first = _flow_first_seen.get(key)
+            if first is None:
+                _flow_first_seen[key] = now
+                first = now
+            duration = max(0, int(now - first))
+            country = _geo_country(f["src_ip"]) or "N/A"
+            res.append({
+                "id": f"F{i:04d}",
+                "sourceIp": f["src_ip"],
+                "destinationIp": f["dst_ip"],
+                "protocol": f["proto"],
+                "port": f["dport"],
+                "bytesIn": 0,
+                "bytesOut": 0,
+                "duration": duration,
+                "suspicious": f["dport"] in {22,23,3389,5900},
+                "country": country,
+                "service": _service_name(f["dport"]),
+                "encrypted": f["dport"] in {443, 853},
+                "packets": 0,
+                "flags": []
+            })
+        summary = {
+            "topPorts": _ports_histogram(flows),
+            "topSources": _top_entities(flows, "src_ip"),
+            "topDestinations": _top_entities(flows, "dst_ip"),
+        }
+        return add_cors_headers(JSONResponse(content={"flows": res, "summary": summary}))
+    except Exception as e:
+        logger.error(f"Analytics network-flows failed: {e}")
+        return add_cors_headers(JSONResponse(content={"flows": []}, status_code=500))
+
+@app.get("/api/analytics/service-metrics")
+async def analytics_service_metrics():
+    """Return service metrics for core components."""
+    try:
+        uptime_sec = int((datetime.now(UTC) - start_time).total_seconds())
+        vpp_count = len(_vpp_interfaces())
+        sysinfo = _system_info()
+        def _proc_stats(substr: str):
+            cpu = mem = 0.0
+            up = "n/a"; pid = None
+            try:
+                for p in psutil.process_iter(attrs=["name","create_time","cpu_percent","memory_percent","pid"]):
+                    name = (p.info.get("name") or "").lower()
+                    if substr in name:
+                        pid = p.info["pid"]
+                        cpu += float(p.cpu_percent(interval=None))
+                        mem += float(p.memory_percent())
+                        ct = p.info.get("create_time")
+                        if ct:
+                            up = f"{int(datetime.now(UTC).timestamp() - ct)}s"
+            except Exception:
+                pass
+            return int(cpu), int(mem), up, pid
+
+        b_cpu, b_mem, b_up, b_pid = _proc_stats("python")
+        v_cpu, v_mem, v_up, v_pid = _proc_stats("vpp")
+
+        services = [
+            {"service": "cerberus-backend","status": "running","connections": len(manager.active_connections),
+             "bandwidth": 0, "cpu": max(0,b_cpu), "memory": max(0,b_mem), "uptime": b_up, "threats": 0,
+             "blocked": 0, "version": "1.0.0", "pid": b_pid},
+            {"service": "vpp","status": "running" if vpp_count>0 or v_pid else "stopped","connections": 0,
+             "bandwidth": 0, "cpu": max(0,v_cpu), "memory": max(0,v_mem), "uptime": v_up, "threats": 0,
+             "blocked": 0, "version": "fd.io", "pid": v_pid},
+            {"service": "ebpf","status": "running" if getattr(firewall_manager,'interface',None) else "stopped",
+             "connections": 0, "bandwidth": 0, "cpu": 0, "memory": 0, "uptime": "n/a", "threats": 0,
+             "blocked": 0, "version": "libbpf"}
+        ]
+        flows = _collect_flows()
+        return add_cors_headers(JSONResponse(content={
+            "services": services,
+            "geo": _geo_summary(flows),
+            "topPorts": _ports_histogram(flows),
+            "topSources": _top_entities(flows, "src_ip"),
+            "topDestinations": _top_entities(flows, "dst_ip"),
+        }))
+    except Exception as e:
+        logger.error(f"Analytics service-metrics failed: {e}")
+        return add_cors_headers(JSONResponse(content={"services": []}, status_code=500))
+
+@app.post("/api/flow/action")
+async def flow_action(request: dict):
+    """Apply action on a flow/threat. For block_ip: append drop rule via preflight manager (safe)."""
+    try:
+        action = request.get("action") or "noop"
+        flow_id = request.get("flowId") or request.get("threatId") or "unknown"
+        src = request.get("sourceIp", "?")
+        dst = request.get("destinationIp", "?")
+        msg = f"{action} applied"
+        if action == "block_ip" and src != "?":
+            try:
+                rules = preflight_manager.get_current_rules() or []
+                rules = list(rules)
+                rules.append({
+                    "id": f"block-{src}",
+                    "action": "drop",
+                    "src_ip": f"{src}",
+                    "dst_ip": "0.0.0.0/0",
+                    "protocol": "any",
+                    "src_port": "any",
+                    "dst_port": "any",
+                    "enabled": True,
+                    "description": "analytics:block_ip"
+                })
+                ok, message = preflight_manager.apply_rules(rules)
+                msg = message if ok else f"failed: {message}"
+            except Exception as e:
+                msg = f"failed: {e}"
+        log_audit_event(f"Flow action {action} applied to {flow_id} {src}->{dst}")
+        return add_cors_headers(JSONResponse(content={"success": True, "message": msg, "id": flow_id}))
+    except Exception as e:
+        logger.error(f"Flow action failed: {e}")
+        return add_cors_headers(JSONResponse(content={"success": False, "detail": str(e)}, status_code=500))
+
+@app.post("/api/system/service/{service}/{action}")
+async def system_service_action(service: str, action: str):
+    """Stub system control for services used by Analytics cards."""
+    try:
+        log_audit_event(f"Service {service} action {action}")
+        return add_cors_headers(JSONResponse(content={"success": True, "message": f"{service} {action} triggered"}))
+    except Exception as e:
+        logger.error(f"Service action failed: {e}")
+        return add_cors_headers(JSONResponse(content={"success": False, "detail": str(e)}, status_code=500))
+
+@app.get("/api/obs/syscalls")
+async def get_syscalls_obs():
+    """Parse auditd (audit.log or ausearch) → journald → synthetic."""
+    try:
+        events: list[dict] = []
+
+        # audit.log tail
         try:
-            system_status = await system_control.get_system_status()
-            
-            # Extract real system info
-            system_info = system_status.get("system_info", {})
-            vpp_status = system_status.get("vpp_status", {})
-            ebpf_status = system_status.get("ebpf_status", {})
-            network_stats = system_status.get("network_stats", {})
-            
-            # Real firewall statistics from VPP/eBPF
-            firewall_stats = {
-                "engine_status": system_status.get("engine_status", "inactive"),
-                "protection_mode": system_status.get("protection_mode", "none"),
-                "packets_processed": vpp_status.get("stats", {}).get("packets_processed", 0),
-                "packets_blocked": vpp_status.get("stats", {}).get("packets_dropped", 0),
-                "packets_received": vpp_status.get("stats", {}).get("packets_received", 0),
-                "ebpf_programs": ebpf_status.get("total_programs", 0),
-                "ebpf_maps": ebpf_status.get("total_maps", 0),
-                "vpp_interfaces": len(vpp_status.get("interfaces", [])),
-                "dual_protection_active": vpp_status.get("dual_protection_active", False)
-            }
-            
-            return {
-                "timestamp": current_time,
-                "system": {
-                    "cpu_usage": system_info.get("cpu", {}).get("usage", 0),
-                    "memory_usage": system_info.get("memory", {}).get("percentage", 0),
-                    "memory_total": system_info.get("memory", {}).get("total", 0),
-                    "memory_used": system_info.get("memory", {}).get("used", 0),
-                    "uptime": system_info.get("uptime", 0),
-                    "hostname": system_info.get("hostname", "Unknown"),
-                    "os": system_info.get("os", "Unknown")
-                },
-                "network": network_stats.get("global", {
-                    "bytes_sent": 0,
-                    "bytes_recv": 0,
-                    "packets_sent": 0,
-                    "packets_recv": 0
-                }),
-                "firewall": firewall_stats,
-                "data": {
-                    "system_info": {
-                        "hostname": system_info.get("hostname", "cerberus-server"),
-                        "kernel_version": system_info.get("kernel", "Linux 6.15.3"),
-                        "cpu_cores": system_info.get("cpu", {}).get("cores", 8),
-                        "total_memory": system_info.get("memory", {}).get("total", 16000000000),
-                        "architecture": system_info.get("architecture", "x86_64"),
-                        "os": system_info.get("os", "Linux 6.15.3")
-                    },
-                    "interfaces": system_info.get("interfaces", [])
-                },
-                "rules_count": {
-                    "total": len(firewall_rules),
-                    "enabled": sum(1 for r in firewall_rules.values() if r.enabled),
-                    "disabled": sum(1 for r in firewall_rules.values() if not r.enabled)
-                },
-                "threat_intel_count": len(threat_intel_db),
-                "vpp_status": vpp_status,
-                "ebpf_status": ebpf_status
-            }
-            
-        except Exception as e:
-            logger.error(f"Error getting real-time data: {e}")
-            # Fall back to basic system info
+            audit_log = Path('/var/log/audit/audit.log')
+            if audit_log.exists():
+                out = subprocess.run(["tail", "-n", "150", str(audit_log)], capture_output=True, text=True, timeout=2)
+                if out.returncode == 0 and out.stdout:
+                    for line in out.stdout.splitlines():
+                        if "type=SYSCALL" not in line:
+                            continue
+                        ts_match = re.search(r"audit\(([^)]+)\)", line)
+                        m_comm = re.search(r"comm=\"([^\"]+)\"", line)
+                        m_pid = re.search(r"pid=([0-9]+)", line)
+                        m_sc = re.search(r"syscall=([0-9A-Za-z_]+)", line)
+                        ts = ts_match.group(1).split(':',1)[0] if ts_match else datetime.now(UTC).isoformat()
+                        events.append({
+                            "ts": ts,
+                            "pid": int(m_pid.group(1)) if m_pid else None,
+                            "process": m_comm.group(1) if m_comm else "?",
+                            "syscall": m_sc.group(1) if m_sc else "?",
+                        })
+        except Exception:
+            pass
+
+        # ausearch
+        if not events and shutil.which("ausearch"):
+            try:
+                out = subprocess.run(["ausearch", "-m", "SYSCALL", "-ts", "recent", "-i"], capture_output=True, text=True, timeout=2)
+                if out.returncode == 0 and out.stdout:
+                    for line in out.stdout.splitlines():
+                        if "syscall" not in line.lower():
+                            continue
+                        ts_match = re.search(r"audit\(([^)]+)\)", line)
+                        m_comm = re.search(r"comm=\"([^\"]+)\"", line)
+                        m_pid = re.search(r"pid=([0-9]+)", line)
+                        m_sc = re.search(r"syscall=([0-9A-Za-z_]+)", line)
+                        ts = ts_match.group(1).split(':',1)[0] if ts_match else datetime.now(UTC).isoformat()
+                        events.append({
+                            "ts": ts,
+                            "pid": int(m_pid.group(1)) if m_pid else None,
+                            "process": m_comm.group(1) if m_comm else "?",
+                            "syscall": m_sc.group(1) if m_sc else "?",
+                        })
+            except Exception:
+                pass
+
+        # journald
+        if not events and shutil.which("journalctl"):
+            try:
+                cmd = ["journalctl", "-n", "120", "-o", "short-iso", "--no-pager", "-t", "audit"]
+                out = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+                if out.returncode == 0 and out.stdout:
+                    for line in out.stdout.splitlines():
+                        if "syscall=" not in line and "SYSCALL" not in line.upper():
+                            continue
+                        ts = line.split()[0]
+                        m_comm = re.search(r"comm=\"([^\"]+)\"", line)
+                        m_pid = re.search(r"pid=([0-9]+)", line)
+                        m_sc = re.search(r"syscall=([0-9A-Za-z_]+)", line)
+                        events.append({
+                            "ts": ts,
+                            "pid": int(m_pid.group(1)) if m_pid else None,
+                            "process": m_comm.group(1) if m_comm else "?",
+                            "syscall": m_sc.group(1) if m_sc else "?",
+                        })
+            except Exception:
+                pass
+
+        if not events:
+            comms = ["nginx", "sshd", "cerberusd", "python", "node"]
+            syscalls = ["openat", "connect", "accept4", "read", "write", "statx", "clone3"]
+            for _ in range(20):
+                events.append({
+                    "ts": datetime.now(UTC).isoformat(),
+                    "pid": random.randint(100, 9999),
+                    "process": random.choice(comms),
+                    "syscall": random.choice(syscalls),
+                })
+        return add_cors_headers(JSONResponse(content={"events": events[-50:]}))
+    except Exception as e:
+        logger.error(f"Failed to get syscalls: {e}")
+        return add_cors_headers(JSONResponse(content={"events": []}, status_code=500))
+
+
+# ---- Process forensics: details and actions (actions gated by env) ----
+def _proc_details_procfs(pid: int) -> dict:
+    info: dict = {"pid": pid}
+    try:
+        status_path = f"/proc/{pid}/status"
+        name = None
+        uid = None
+        if os.path.exists(status_path):
+            with open(status_path, "r", errors="ignore") as f:
+                for line in f:
+                    if line.startswith("Name:\t"):
+                        name = line.split("\t",1)[1].strip()
+                    elif line.startswith("Uid:\t"):
+                        uid = int(line.split()[1])
+        username = None
+        if uid is not None:
+            try:
+                username = pwd.getpwuid(uid).pw_name
+            except Exception:
+                username = None
+        # cmdline
+        cmdline = []
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                raw = f.read().replace(b"\x00", b" ").strip()
+                if raw:
+                    cmdline = raw.decode(errors="ignore").split()
+        except Exception:
+            pass
+        # exe symlink
+        exe = None
+        try:
+            exe = os.readlink(f"/proc/{pid}/exe")
+        except Exception:
+            pass
+        info.update({
+            "name": name or "?",
+            "username": username or "?",
+            "cmdline": cmdline,
+            "exe": exe,
+        })
+    except Exception as e:
+        info["error"] = str(e)
+    return info
+
+def _proc_details(pid: int) -> dict:
+    info: dict = {"pid": pid}
+    try:
+        p = psutil.Process(pid)
+        # безопасные геттеры
+        def safe(fn, default=None):
+            try:
+                return fn()
+            except Exception:
+                return default
+        name = safe(p.name, "?")
+        username = safe(p.username, "?")
+        cmdline = safe(p.cmdline, []) or []
+        exe = safe(p.exe, None)
+        cpu = safe(lambda: p.cpu_percent(interval=None), 0.0) or 0.0
+        mem = safe(p.memory_percent, 0.0) or 0.0
+        cwd = safe(getattr, None)
+        open_files = safe(lambda: [f.path for f in p.open_files()], [])
+        conns = safe(lambda: len(p.connections(kind='inet')), 0)
+        ctime = safe(p.create_time, None)
+        info.update({
+            "name": name,
+            "exe": exe,
+            "cmdline": cmdline,
+            "username": username,
+            "create_time": ctime,
+            "cpu_percent": float(cpu) if cpu is not None else 0.0,
+            "memory_percent": float(mem) if mem is not None else 0.0,
+            "cwd": cwd,
+            "open_files": open_files,
+            "connections": conns,
+        })
+        # fill missing from /proc if any
+        if (not name or name == "?") or (not username or username == "?") or not cmdline:
+            pf = _proc_details_procfs(pid)
+            for k in ("name","username","cmdline","exe"):
+                if not info.get(k) and pf.get(k):
+                    info[k] = pf[k]
+    except psutil.NoSuchProcess as e:
+        info.update({"cpu_percent": 0.0, "memory_percent": 0.0, "error": str(e)})
+        info.update(_proc_details_procfs(pid))
+    except psutil.AccessDenied as e:
+        info.update({"cpu_percent": 0.0, "memory_percent": 0.0, "error": str(e)})
+        info.update(_proc_details_procfs(pid))
+    except Exception as e:
+        info["error"] = str(e)
+    return info
+
+@app.get("/api/obs/process/{pid}")
+async def get_process_details(pid: int):
+    try:
+        return add_cors_headers(JSONResponse(content={"process": _proc_details(pid)}))
+    except Exception as e:
+        logger.error(f"get_process_details failed: {e}")
+        return add_cors_headers(JSONResponse(content={"error": str(e)}, status_code=500))
+
+@app.post("/api/obs/process/{pid}/{action}")
+async def process_action(pid: int, action: str, value: Optional[int] = None):
+    try:
+        if os.environ.get("CERB_ALLOW_PROC_ACTIONS") != "1":
+            return add_cors_headers(JSONResponse(content={"success": False, "detail": "process actions disabled (set CERB_ALLOW_PROC_ACTIONS=1)"}, status_code=403))
+        p = psutil.Process(pid)
+        acted = False
+        if action in ("terminate", "term"):
+            p.terminate(); acted = True
+        elif action in ("kill", "sigkill"):
+            p.kill(); acted = True
+        elif action in ("stop", "suspend"):
+            p.suspend(); acted = True
+        elif action in ("cont", "resume"):
+            p.resume(); acted = True
+        elif action in ("renice", "nice"):
+            if value is None:
+                value = 10
+            p.nice(value); acted = True
+        elif action in ("quarantine", "isolate"):
+            # Placeholder: future netns/cgroup isolation
+            log_audit_event(f"Quarantine requested for pid={pid}")
+            acted = True
+        else:
+            return add_cors_headers(JSONResponse(content={"success": False, "detail": f"unknown action {action}"}, status_code=400))
+        if acted:
+            log_audit_event(f"process action {action} applied to pid={pid}")
+            return add_cors_headers(JSONResponse(content={"success": True, "message": f"{action} applied", "process": _proc_details(pid)}))
+        return add_cors_headers(JSONResponse(content={"success": False, "detail": "no-op"}, status_code=400))
+    except psutil.NoSuchProcess:
+        return add_cors_headers(JSONResponse(content={"success": False, "detail": "no such process"}, status_code=404))
+    except psutil.AccessDenied:
+        return add_cors_headers(JSONResponse(content={"success": False, "detail": "access denied"}, status_code=403))
+    except Exception as e:
+        logger.error(f"process_action failed: {e}")
+        return add_cors_headers(JSONResponse(content={"success": False, "detail": str(e)}, status_code=500))
+
+# ---- Critical logs (journalctl err..alert) ----
+@app.get("/api/logs/critical")
+async def logs_critical(limit: int = 100):
+    try:
+        lines: list[str] = []
+        if shutil.which("journalctl"):
+            cmd = ["journalctl", "-p", "err..alert", "-n", str(max(1, min(limit, 500))), "-o", "short-iso", "--no-pager"]
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+            if out.returncode == 0 and out.stdout:
+                lines = [l for l in out.stdout.splitlines() if l.strip()]
+        return add_cors_headers(JSONResponse(content={"lines": lines}))
+    except Exception as e:
+        logger.error(f"logs_critical failed: {e}")
+        return add_cors_headers(JSONResponse(content={"lines": [], "error": str(e)}, status_code=500))
+
+
+@app.websocket("/ws/obs")
+async def websocket_obs(ws: WebSocket):
+    """WebSocket stream for lightweight observability: syscalls (synthetic) and logs tail."""
+    await ws.accept()
+    try:
+        while True:
+            # Syscalls (synthetic for now)
+            payload = {"syscalls": [] , "logs": []}
+            try:
+                comms = ["nginx", "sshd", "cerberusd", "python", "node"]
+                syscalls = ["openat", "connect", "accept4", "read", "write", "statx", "clone3"]
+                events = []
+                for _ in range(8):
+                    events.append({
+                        "ts": datetime.now(UTC).isoformat(),
+                        "pid": random.randint(100, 9999),
+                        "comm": random.choice(comms),
+                        "syscall": random.choice(syscalls),
+                        "args": "fd=3, flags=O_RDONLY"
+                    })
+                payload["syscalls"] = events
+            except Exception:
+                pass
+
+            # Logs tail (journalctl best-effort)
+            try:
+                if shutil.which("journalctl"):
+                    cmd = ["journalctl", "-n", "20", "-o", "short-iso", "--no-pager"]
+                    out = subprocess.run(cmd, capture_output=True, text=True, timeout=1)
+                    if out.returncode == 0:
+                        lines = [l for l in out.stdout.splitlines() if l.strip()][:20]
+                        payload["logs"] = lines
+            except Exception:
+                pass
+
+            await ws.send_text(json.dumps(payload))
+            await asyncio.sleep(2)
+    except WebSocketDisconnect:
+        return
+        
+    except Exception as e:
+        logger.error(f"Failed to get logs: {e}")
+        error_response = JSONResponse(
+            content={"error": str(e)},
+            status_code=500
+        )
+        return add_cors_headers(error_response)
+
+# eBPF Management API
+class EbpfProgram:
+    def __init__(self, name: str, type: str, status: str, interface: str = ""):
+        self.name = name
+        self.type = type
+        self.status = status
+        self.interface = interface
     
-    # Fallback to basic system information if real system control is not available
-    cpu_percent = psutil.cpu_percent()
-    memory = psutil.virtual_memory()
-    net_io = psutil.net_io_counters()
+    def dict(self):
+        return {
+            "name": self.name,
+            "type": self.type,
+            "status": self.status,
+            "interface": self.interface
+        }
+
+class EbpfStats:
+    def __init__(self, packets_processed: int = 0, packets_dropped: int = 0, 
+                 bytes_processed: int = 0, cpu_usage: float = 0.0):
+        self.packets_processed = packets_processed
+        self.packets_dropped = packets_dropped
+        self.bytes_processed = bytes_processed
+        self.cpu_usage = cpu_usage
     
-    # Generate mock firewall statistics for fallback
-    firewall_stats = {
-        "engine_status": "simulation",
-        "protection_mode": "demo",
-        "packets_processed": random.randint(1000, 5000),
-        "packets_blocked": random.randint(10, 100),
-        "connections_active": random.randint(100, 500),
-        "threats_detected": random.randint(0, 10),
-        "rules_evaluated": random.randint(10000, 50000)
+    def dict(self):
+        return {
+            "packets_processed": self.packets_processed,
+            "packets_dropped": self.packets_dropped,
+            "bytes_processed": self.bytes_processed,
+            "cpu_usage": self.cpu_usage
+        }
+
+# Real eBPF Firewall Manager
+try:
+    from ebpf.firewall_manager import create_firewall_manager, FirewallRule, RuleAction, Protocol
+    firewall_manager = create_firewall_manager("eth0", demo_mode=True)
+    logger.info("Real eBPF Firewall Manager loaded")
+except ImportError as e:
+    logger.warning(f"Could not import real firewall manager: {e}")
+    # Fallback to mock
+    class EbpfManager:
+        def __init__(self):
+            self.interface = "eth0"
+            # engine_state: auto|xdp|tc — 'tc' безопасен для Wi‑Fi
+            self.engine_state = "auto"
+            self.programs = {
+                "xdp_filter": EbpfProgram("xdp_filter", "XDP", "inactive", self.interface),
+                "tc_filter": EbpfProgram("tc_filter", "TC", "inactive", self.interface)
+            }
+            self.stats = EbpfStats()
+        
+        def get_programs(self):
+            return [prog.dict() for prog in self.programs.values()]
+        
+        def load_program(self, name: str, interface: str):
+            if name in self.programs:
+                self.programs[name].status = "active"
+                self.programs[name].interface = interface
+                self.interface = interface
+                return True
+            return False
+        
+        def unload_program(self, name: str):
+            if name in self.programs:
+                self.programs[name].status = "inactive"
+                return True
+            return False
+        
+        def get_stats(self):
+            return self.stats.dict()
+    
+    firewall_manager = EbpfManager()
+    logger.info("Mock eBPF Manager loaded as fallback")
+
+def _list_network_interfaces():
+    """Return a portable list of network interfaces with basic metadata.
+    Uses `ip -j` (iproute2) which is present on all modern Linux distros.
+    """
+    # Try iproute2 JSON first
+    try:
+        if shutil.which("ip"):
+            links = subprocess.run(["ip", "-j", "link"], capture_output=True, text=True, check=True)
+            addrs = subprocess.run(["ip", "-j", "addr"], capture_output=True, text=True, check=True)
+            routes = subprocess.run(["ip", "-j", "route", "show", "default"], capture_output=True, text=True, check=True)
+
+            link_list = pyjson.loads(links.stdout or "[]")
+            addr_list = pyjson.loads(addrs.stdout or "[]")
+            route_list = pyjson.loads(routes.stdout or "[]") if (routes.stdout or "").strip() else []
+            default_ifaces = {r.get("dev") for r in route_list if r.get("dev")}
+
+            name_to_addrs: dict[str, list[str]] = {}
+            for a in addr_list:
+                ifname = a.get("ifname")
+                if not ifname:
+                    continue
+                ip_addrs = []
+                for info in a.get("addr_info", []):
+                    local = info.get("local")
+                    if local:
+                        ip_addrs.append(local)
+                name_to_addrs[ifname] = ip_addrs
+
+            interfaces: list[dict] = []
+            for l in link_list:
+                ifname = l.get("ifname")
+                if not ifname:
+                    continue
+                flags = l.get("flags", [])
+                is_up = "UP" in flags
+                mac = l.get("address") or ""
+
+                is_wireless = Path(f"/sys/class/net/{ifname}/wireless").exists()
+                is_loopback = "LOOPBACK" in flags or ifname == "lo"
+                is_virtual = Path(f"/sys/devices/virtual/net/{ifname}").exists()
+
+                iface_type = (
+                    "loopback" if is_loopback else "wireless" if is_wireless else "virtual" if is_virtual else "ethernet"
+                )
+
+                interfaces.append({
+                    "name": ifname,
+                    "is_up": bool(is_up),
+                    "type": iface_type,
+                    "mac_address": mac,
+                    "ip_addresses": name_to_addrs.get(ifname, []),
+                    "is_default": ifname in default_ifaces,
+                    "has_ip": len(name_to_addrs.get(ifname, [])) > 0,
+                })
+
+            interfaces.sort(key=lambda x: (0 if x["is_default"] else 1, 0 if x["is_up"] else 1, 0 if x["type"] == "ethernet" else 1, x["name"]))
+            if interfaces:
+                return interfaces
+    except Exception as e:
+        logger.error(f"Failed to enumerate interfaces via iproute2: {e}")
+
+    # Fallback: scan sysfs
+    try:
+        interfaces: list[dict] = []
+        for p in Path("/sys/class/net").iterdir():
+            ifname = p.name
+            try:
+                is_wireless = (p / "wireless").exists()
+                is_virtual = Path(f"/sys/devices/virtual/net/{ifname}").exists()
+                oper = (p / "operstate").read_text().strip() if (p / "operstate").exists() else "unknown"
+                mac = (p / "address").read_text().strip() if (p / "address").exists() else ""
+                iface_type = "loopback" if ifname == "lo" else ("wireless" if is_wireless else ("virtual" if is_virtual else "ethernet"))
+                interfaces.append({
+                    "name": ifname,
+                    "is_up": oper == "up",
+                    "type": iface_type,
+                    "mac_address": mac,
+                    "ip_addresses": [],
+                    "is_default": False,
+                    "has_ip": False,
+                })
+            except Exception:
+                continue
+        interfaces.sort(key=lambda x: (0 if x["is_up"] else 1, 0 if x["type"] == "ethernet" else 1, x["name"]))
+        return interfaces
+    except Exception as e:
+        logger.error(f"Failed to enumerate interfaces via sysfs: {e}")
+        return []
+
+def _system_info():
+    try:
+        hostname = socket.gethostname()
+        kernel_version = platform.release()
+        cpu_cores = os.cpu_count() or 0
+        total = 0
+        available = 0
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        total = int(line.split()[1]) * 1024
+                    elif line.startswith("MemAvailable:"):
+                        available = int(line.split()[1]) * 1024
+        except Exception:
+            pass
+        used = max(0, total - available)
+        return {
+            "hostname": hostname,
+            "kernel_version": kernel_version,
+            "cpu_cores": cpu_cores,
+            "total_memory": total,
+            "used_memory": used,
+        }
+    except Exception as e:
+        logger.error(f"system_info failed: {e}")
+        return {"hostname": "N/A", "kernel_version": "N/A", "cpu_cores": 0, "total_memory": 0, "used_memory": 0}
+
+def _vpp_interfaces() -> list:
+    """Return list of VPP interfaces via vppctl. Excludes local0. Best-effort."""
+    try:
+        if not shutil.which("vppctl"):
+            return []
+        out = subprocess.run(["vppctl", "show", "interface"], capture_output=True, text=True, timeout=1)
+        if out.returncode != 0 or not out.stdout:
+            return []
+        interfaces: list[str] = []
+        for line in out.stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("Name"):
+                continue
+            name = line.split()[0]
+            if name and name != "local0":
+                interfaces.append(name)
+        return interfaces
+    except Exception as e:
+        logger.debug(f"vpp interface enum failed: {e}")
+        return []
+
+def _service_name(port: int) -> str:
+    mapping = {
+        22: "ssh", 23: "telnet", 25: "smtp", 53: "dns", 80: "http", 443: "https",
+        853: "dot", 3306: "mysql", 5432: "postgres", 3389: "rdp", 5900: "vnc",
+        8080: "http-alt"
     }
-    
-    return {
-        "timestamp": current_time,
-        "system": {
-            "cpu_usage": cpu_percent,
-            "memory_usage": memory.percent,
-            "memory_total": memory.total,
-            "memory_used": memory.used,
-            "uptime": time.time() - psutil.boot_time(),
-            "hostname": socket.gethostname(),
-            "os": "Fallback Mode"
-        },
-        "network": {
-            "bytes_sent": net_io.bytes_sent,
-            "bytes_recv": net_io.bytes_recv,
-            "packets_sent": net_io.packets_sent,
-            "packets_recv": net_io.packets_recv
-        },
-        "firewall": firewall_stats,
-        "data": {
-            "system_info": {
-                "hostname": socket.gethostname(),
-                "kernel_version": "Linux 6.15.3-200.fc42.x86_64",
-                "cpu_cores": psutil.cpu_count(logical=False) or 8,
-                "total_memory": memory.total,
-                "architecture": "x86_64",
-                "os": "Linux 6.15.3"
-            },
-            "interfaces": [
+    try:
+        return mapping.get(int(port), "unknown")
+    except Exception:
+        return "unknown"
+
+def _collect_flows() -> list:
+    """Collect active connections via multiple portable methods.
+    Order: ss (iproute2) → psutil.net_connections → netstat. Falls back to synthetic.
+    """
+    flows: list[dict] = []
+
+    def add(proto: str, src_ip: str, dst_ip: str, sport: int, dport: int):
+        flows.append({
+            "proto": proto,
+            "src_ip": src_ip,
+            "dst_ip": dst_ip,
+            "sport": int(sport) if sport else 0,
+            "dport": int(dport) if dport else 0,
+        })
+
+    # 1) ss (present on all modern Linux)
+    try:
+        if shutil.which("ss"):
+            specs = [("TCP", ["-tan"]), ("UDP", ["-uan"])]
+            for proto, flags in specs:
+                out = subprocess.run(["ss", "-H", *flags], capture_output=True, text=True, timeout=2)
+                if out.returncode != 0 or not out.stdout:
+                    continue
+                for line in out.stdout.splitlines():
+                    parts = line.split()
+                    if len(parts) < 4:
+                        continue
+                    src = parts[-2]
+                    dst = parts[-1]
+
+                    def split_ep(addr: str):
+                        try:
+                            if addr.startswith("[") and "]:" in addr:
+                                a, p = addr.rsplit(":", 1)
+                                return a.strip("[]"), int(p) if p.isdigit() else 0
+                            if addr.count(":") > 1 and not addr.endswith("]"):
+                                return addr, 0  # IPv6 without port
+                            if ":" in addr:
+                                h, p = addr.rsplit(":", 1)
+                                return h, int(p) if p.isdigit() else 0
+                            return addr, 0
+                        except Exception:
+                            return addr, 0
+
+                    src_ip, sport = split_ep(src)
+                    dst_ip, dport = split_ep(dst)
+                    add(proto, src_ip, dst_ip, sport, dport)
+    except Exception:
+        pass
+
+    # 2) psutil fallback (portable, may miss UDP)
+    try:
+        if not flows:
+            for c in psutil.net_connections(kind='inet'):
+                laddr = getattr(c, 'laddr', None)
+                raddr = getattr(c, 'raddr', None)
+                if not laddr or not raddr:
+                    continue
+                proto = "TCP" if c.type == socket.SOCK_STREAM else "UDP"
+                add(proto, laddr.ip, raddr.ip, laddr.port, raddr.port)
+    except Exception:
+        pass
+
+    # 3) netstat fallback
+    try:
+        if not flows and shutil.which("netstat"):
+            out = subprocess.run(["netstat", "-tun"], capture_output=True, text=True, timeout=2)
+            if out.returncode == 0:
+                for line in out.stdout.splitlines():
+                    if not line or line.startswith("Proto"):
+                        continue
+                    parts = line.split()
+                    if len(parts) < 5:
+                        continue
+                    proto = parts[0].upper()
+                    src = parts[3]
+                    dst = parts[4]
+                    def split_ep2(addr: str):
+                        try:
+                            if ":" in addr and not addr.strip().startswith("["):
+                                h, p = addr.rsplit(":", 1)
+                                return h, int(p) if p.isdigit() else 0
+                            return addr, 0
+                        except Exception:
+                            return addr, 0
+                    src_ip, sport = split_ep2(src)
+                    dst_ip, dport = split_ep2(dst)
+                    add(proto, src_ip, dst_ip, sport, dport)
+    except Exception:
+        pass
+
+    # 4) As a last resort, synthesize a loopback flow to keep UI alive
+    if not flows:
+        try:
+            add("TCP", "127.0.0.1", "127.0.0.1", 0, 8000)
+        except Exception:
+            pass
+    return flows
+
+# ---- Additional Analytics helpers ----
+def _geo_summary(flows: list[dict]) -> dict:
+    summary = {"private": 0, "public": 0}
+    for f in flows:
+        try:
+            ip = ipaddress.ip_address(f.get("src_ip", "0.0.0.0"))
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                summary["private"] += 1
+            else:
+                summary["public"] += 1
+        except Exception:
+            continue
+    return summary
+
+def _ports_histogram(flows: list[dict], top_n: int = 10) -> list[dict]:
+    counts: dict[int, int] = {}
+    for f in flows:
+        p = int(f.get("dport", 0))
+        if p <= 0:
+            continue
+        counts[p] = counts.get(p, 0) + 1
+    top = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    return [{"port": k, "count": v, "service": _service_name(k)} for k, v in top]
+
+def _top_entities(flows: list[dict], field: str, top_n: int = 10) -> list[dict]:
+    counts: dict[str, int] = {}
+    for f in flows:
+        key = f.get(field)
+        if not key:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    return [{"value": k, "count": v} for k, v in sorted(counts.items(), key=lambda x: x[1], reverse=True)[:top_n]]
+
+# Safety guard: ensure _geo_country exists even if older module is loaded
+try:
+    _geo_country  # type: ignore[name-defined]
+except NameError:  # pragma: no cover
+    _GEO_READER = None
+    _GEO_MISS = object()
+    def _geo_init():
+        """Lazy init MaxMind reader if available."""
+        global _GEO_READER
+        if _GEO_READER is not None:
+            return _GEO_READER
+        try:
+            from geoip2.database import Reader  # type: ignore
+            # Typical system paths; choose first existing
+            env_path = os.environ.get("CERB_GEOIP_DB")
+            candidates = ([env_path] if env_path else []) + [
+                "/usr/share/GeoIP/GeoLite2-Country.mmdb",
+                "/usr/local/share/GeoIP/GeoLite2-Country.mmdb",
+                str(Path.home()/".local/share/GeoIP/GeoLite2-Country.mmdb"),
+            ]
+            for p in candidates:
+                if Path(p).exists():
+                    _GEO_READER = Reader(p)
+                    break
+        except Exception:
+            _GEO_READER = None
+        return _GEO_READER
+
+    def _geo_country(ip: str) -> str | None:  # noqa: N802
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+            if ip_obj.is_private or ip_obj.is_loopback:
+                return None
+        except Exception:
+            return None
+        if ip in _geo_cache:
+            val = _geo_cache.get(ip, _GEO_MISS)
+            return None if val is _GEO_MISS else val
+        reader = _geo_init()
+        if not reader:
+            _geo_cache[ip] = _GEO_MISS
+            return None
+        try:
+            rec = reader.country(ip)
+            code = getattr(getattr(rec, "country", None), "iso_code", None)
+            if code:
+                _geo_cache[ip] = code
+                return code
+        except Exception:
+            pass
+        _geo_cache[ip] = _GEO_MISS
+        return None
+
+# ---- Geo analytics API ----
+@app.get("/api/analytics/geo")
+async def analytics_geo():
+    try:
+        flows = _collect_flows()
+        # build country histogram using geo lookup of source IP
+        country_counts: dict[str, int] = {}
+        for f in flows:
+            try:
+                c = _geo_country(f.get("src_ip", ""))
+            except Exception:
+                c = None
+            if not c:
+                continue
+            country_counts[c] = country_counts.get(c, 0) + 1
+        countries = [
+            {"code": k, "count": v}
+            for k, v in sorted(country_counts.items(), key=lambda x: x[1], reverse=True)
+        ]
+        data = {
+            "geo": _geo_summary(flows),
+            "topPorts": _ports_histogram(flows),
+            "topSources": _top_entities(flows, "src_ip"),
+            "topDestinations": _top_entities(flows, "dst_ip"),
+            "countries": countries,
+            "blockedCountries": list(geo_blocked_countries),
+        }
+        return add_cors_headers(JSONResponse(content=data))
+    except Exception as e:
+        logger.error(f"analytics_geo failed: {e}")
+        return add_cors_headers(JSONResponse(content={"geo": {"private":0,"public":0}}, status_code=500))
+
+@app.post("/api/geo/block")
+async def geo_block(request: dict):
+    try:
+        country = (request.get("country") or "").upper()
+        if not country or len(country) != 2:
+            return add_cors_headers(JSONResponse(content={"success": False, "message": "country must be ISO alpha-2"}, status_code=400))
+        if country not in geo_blocked_countries:
+            geo_blocked_countries.append(country)
+        log_audit_event(f"Geo block added for country={country}")
+        return add_cors_headers(JSONResponse(content={"success": True, "blockedCountries": geo_blocked_countries}))
+    except Exception as e:
+        logger.error(f"geo_block failed: {e}")
+        return add_cors_headers(JSONResponse(content={"success": False, "message": str(e)}, status_code=500))
+
+def _recommend_interface(interfaces):
+    """Pick a safe default interface for XDP generic attach.
+    Preference: non-wireless, non-loopback, up, has IP, default route.
+    """
+    if not interfaces:
+        return {"name": "eth0", "reason": "fallback"}
+
+    # Best candidate
+    for prefer_default in (True, False):
+        for i in interfaces:
+            if i["type"] in ("ethernet", "virtual") and i["is_up"] and (i["is_default"] if prefer_default else True):
+                return {"name": i["name"], "reason": "default" if i["is_default"] else "up"}
+
+    # Fallback to first up iface
+    for i in interfaces:
+        if i["is_up"]:
+            return {"name": i["name"], "reason": "first-up"}
+    return {"name": interfaces[0]["name"], "reason": "first"}
+
+@app.get("/api/ebpf/programs")
+async def get_ebpf_programs():
+    """Get list of eBPF programs."""
+    try:
+        if hasattr(firewall_manager, 'get_programs'):
+            programs = firewall_manager.get_programs()
+        else:
+            programs = [
+                {"name": "firewall_engine", "type": "XDP", "status": "active" if firewall_manager.is_loaded() else "inactive", "interface": "eth0"}
+            ]
+        response = JSONResponse(content={"programs": programs})
+        return add_cors_headers(response)
+    except Exception as e:
+        logger.error(f"Failed to get eBPF programs: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
+
+@app.get("/api/network/interfaces")
+async def list_interfaces():
+    """Enumerate host network interfaces and provide a recommended default.
+    Portable across Linux distros using iproute2 JSON output.
+    """
+    try:
+        interfaces = _list_network_interfaces()
+        recommended = _recommend_interface(interfaces)
+        # annotate hints for frontend UX
+        for i in interfaces:
+            if i.get("type") == "wireless":
+                i["xdp_mode"] = "generic"
+                i["not_recommended"] = True
+            else:
+                i["xdp_mode"] = "native"
+                i["not_recommended"] = False
+
+        response = JSONResponse(content={
+            "interfaces": interfaces,
+            "recommended": recommended,
+            "total_count": len(interfaces)
+        })
+        return add_cors_headers(response)
+    except Exception as e:
+        logger.error(f"Failed to list interfaces: {e}")
+        return add_cors_headers(JSONResponse(content={"interfaces": [], "error": str(e)}, status_code=500))
+
+@app.post("/api/ebpf/load")
+async def load_ebpf_program(request: dict):
+    """Load eBPF program."""
+    try:
+        name = request.get("name")
+        interface = request.get("interface", "eth0")
+        
+        if not name:
+            return add_cors_headers(JSONResponse(
+                content={"error": "Program name required"}, 
+                status_code=400
+            ))
+        
+        # Mock manager exposes attribute 'programs'; real manager usually not
+        if hasattr(firewall_manager, 'programs'):
+            success = firewall_manager.load_program(name, interface)
+        elif hasattr(firewall_manager, 'load_program'):
+            success = firewall_manager.load_program()
+        else:
+            success = False
+            
+        if success:
+            log_audit_event(f"eBPF program {name} loaded on {interface}")
+            return add_cors_headers(JSONResponse(
+                content={"success": True, "message": f"Program {name} loaded successfully"}
+            ))
+        else:
+            return add_cors_headers(JSONResponse(
+                content={"error": f"Failed to load program {name}"}, 
+                status_code=500
+            ))
+    except Exception as e:
+        logger.error(f"Failed to load eBPF program: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
+
+@app.post("/api/ebpf/unload")
+async def unload_ebpf_program(request: dict):
+    """Unload eBPF program."""
+    try:
+        name = request.get("name")
+        
+        if not name:
+            return add_cors_headers(JSONResponse(
+                content={"error": "Program name required"}, 
+                status_code=400
+            ))
+        
+        success = firewall_manager.unload_program(name)
+        if success:
+            log_audit_event(f"eBPF program {name} unloaded")
+            return add_cors_headers(JSONResponse(
+                content={"success": True, "message": f"Program {name} unloaded successfully"}
+            ))
+        else:
+            return add_cors_headers(JSONResponse(
+                content={"error": f"Program {name} not found"}, 
+                status_code=404
+            ))
+    except Exception as e:
+        logger.error(f"Failed to unload eBPF program: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
+
+@app.get("/api/ebpf/stats")
+async def get_ebpf_stats():
+    """Get eBPF statistics."""
+    try:
+        stats_data = {"packets_processed": 0, "packets_dropped": 0, "bytes_processed": 0, "cpu_usage": 0.0}
+        if hasattr(firewall_manager, 'get_stats'):
+            stats = firewall_manager.get_stats()
+            if isinstance(stats, dict):
+                stats_data.update(stats)
+            else:
+                # object with attributes
+                stats_data.update({
+                    "packets_processed": getattr(stats, 'packets_processed', 0) or 0,
+                    "packets_dropped": getattr(stats, 'packets_dropped', 0) or 0,
+                    "bytes_processed": getattr(stats, 'bytes_processed', 0) or 0,
+                    "cpu_usage": float(getattr(stats, 'cpu_usage', 0.0) or 0.0),
+                })
+        response = JSONResponse(content=stats_data)
+        return add_cors_headers(response)
+    except Exception as e:
+        logger.error(f"Failed to get eBPF stats: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
+
+# Firewall Rules API
+@app.get("/api/firewall/rules")
+async def get_firewall_rules():
+    """Get all firewall rules."""
+    try:
+        if hasattr(firewall_manager, 'get_rules'):
+            rules = firewall_manager.get_rules()
+            rules_data = []
+            for rule in rules:
+                rules_data.append({
+                "id": rule.id,
+                    "action": rule.action.name if hasattr(rule.action, 'name') else rule.action,
+                    "protocol": rule.protocol.name if hasattr(rule.protocol, 'name') else rule.protocol,
+                    "src_ip": rule.src_ip,
+                    "dst_ip": rule.dst_ip,
+                    "src_port": rule.src_port,
+                    "dst_port": rule.dst_port,
+                    "enabled": rule.enabled,
+                "priority": rule.priority,
+                    "hit_count": rule.hit_count,
+                    "description": rule.description
+                })
+        else:
+            rules_data = []
+        
+        response = JSONResponse(content={"rules": rules_data})
+        return add_cors_headers(response)
+    except Exception as e:
+        logger.error(f"Failed to get firewall rules: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
+
+@app.post("/api/firewall/rules")
+async def add_firewall_rule(request: dict):
+    """Add a new firewall rule."""
+    try:
+        if not hasattr(firewall_manager, 'add_rule'):
+            return add_cors_headers(JSONResponse(
+                content={"error": "Firewall manager not available"}, 
+                status_code=500
+            ))
+        
+        # Create rule from request
+        rule = FirewallRule(
+            id=0,  # Will be set by manager
+            action=RuleAction[request.get("action", "DROP").upper()],
+            protocol=Protocol[request.get("protocol", "ANY").upper()],
+            src_ip=request.get("src_ip", "0.0.0.0"),
+            dst_ip=request.get("dst_ip", "0.0.0.0"),
+            src_port=request.get("src_port", 0),
+            dst_port=request.get("dst_port", 0),
+            enabled=request.get("enabled", True),
+            priority=request.get("priority", 100),
+            description=request.get("description", "")
+        )
+        
+        success = firewall_manager.add_rule(rule)
+        if success:
+            log_audit_event(f"Firewall rule added: {rule.src_ip} -> {rule.dst_ip}")
+            return add_cors_headers(JSONResponse(
+                content={"success": True, "message": "Rule added successfully", "rule_id": rule.id}
+            ))
+        else:
+            return add_cors_headers(JSONResponse(
+                content={"error": "Failed to add rule"}, 
+                status_code=500
+            ))
+    except Exception as e:
+        logger.error(f"Failed to add firewall rule: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
+
+@app.delete("/api/firewall/rules/{rule_id}")
+async def delete_firewall_rule(rule_id: int):
+    """Delete a firewall rule."""
+    try:
+        if not hasattr(firewall_manager, 'remove_rule'):
+            return add_cors_headers(JSONResponse(
+                content={"error": "Firewall manager not available"}, 
+                status_code=500
+            ))
+        
+        success = firewall_manager.remove_rule(rule_id)
+        if success:
+            log_audit_event(f"Firewall rule {rule_id} deleted")
+            return add_cors_headers(JSONResponse(
+                content={"success": True, "message": f"Rule {rule_id} deleted successfully"}
+            ))
+        else:
+            return add_cors_headers(JSONResponse(
+                content={"error": f"Rule {rule_id} not found"}, 
+                status_code=404
+            ))
+    except Exception as e:
+        logger.error(f"Failed to delete firewall rule: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
+
+# System Control API
+@app.post("/api/system/start")
+async def start_system(request: dict):
+    """Start the firewall system."""
+    try:
+        # Load eBPF firewall program (support both mock and real managers)
+        iface = current_config.get("ebpf", {}).get("interface", "eth0") if isinstance(current_config, dict) else "eth0"
+        if hasattr(firewall_manager, 'programs'):
+            # Mock manager: method signature load_program(name, interface)
+            firewall_manager.load_program("xdp_filter", iface)
+            firewall_manager.load_program("tc_filter", iface)
+            try:
+                setattr(firewall_manager, 'interface', iface)
+            except Exception:
+                pass
+        elif hasattr(firewall_manager, 'load_program'):
+            # Real manager: load_program() returns bool
+            success = firewall_manager.load_program()
+            if not success:
+                return add_cors_headers(JSONResponse(
+                    content={"error": "Failed to load eBPF program"}, 
+                    status_code=500
+                ))
+        else:
+            logger.warning("No firewall manager available to load program")
+        
+        # Switch overall mode to LIVE (mock preflight gating)
+        try:
+            preflight_manager.set_mode("live")
+        except Exception:
+            pass
+
+        log_audit_event("Firewall system started")
+        return add_cors_headers(JSONResponse(
+            content={"success": True, "message": "Firewall system started successfully"}
+        ))
+    except Exception as e:
+        logger.error(f"Failed to start system: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
+
+@app.post("/api/system/stop")
+async def stop_system(request: dict):
+    """Stop the firewall system."""
+    try:
+        # Unload all eBPF programs
+        if hasattr(firewall_manager, 'programs'):
+            for name in firewall_manager.programs:
+                firewall_manager.unload_program(name)
+        else:
+            # Fallback for mock manager
+            logger.info("Mock firewall manager - no programs to unload")
+        
+        log_audit_event("Firewall system stopped")
+        return add_cors_headers(JSONResponse(
+            content={"success": True, "message": "Firewall system stopped successfully"}
+        ))
+    except Exception as e:
+        logger.error(f"Failed to stop system: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
+
+@app.get("/api/system/status")
+async def get_system_status():
+    """Get system status."""
+    try:
+        running = False
+        programs = []
+        stats_dict = {
+            "packets_processed": 0,
+            "packets_dropped": 0,
+            "bytes_processed": 0,
+            "cpu_usage": 0.0
+        }
+
+        if hasattr(firewall_manager, 'is_loaded'):
+            # Real eBPF manager path
+            running = bool(firewall_manager.is_loaded())
+            total_programs = 1
+            active_programs = 1 if running else 0
+            programs = [
                 {
-                    "name": "eth0",
-                    "status": "up",
-                    "ip_address": "192.168.1.100",
-                    "mac_address": "00:1b:21:3c:4d:5e",
-                    "mtu": 1500,
-                    "rx_packets": random.randint(10000, 50000),
-                    "tx_packets": random.randint(8000, 40000),
-                    "rx_bytes": random.randint(10000000, 50000000),
-                    "tx_bytes": random.randint(8000000, 40000000)
-                },
-                {
-                    "name": "vpp-ebpf-0",
-                    "status": "up", 
-                    "ip_address": "10.0.1.1",
-                    "mac_address": "02:fe:3a:4b:5c:6d",
-                    "mtu": 9000,
-                    "rx_packets": random.randint(15000, 60000),
-                    "tx_packets": random.randint(12000, 50000),
-                    "rx_bytes": random.randint(15000000, 60000000),
-                    "tx_bytes": random.randint(12000000, 50000000)
+                    "name": "firewall_engine",
+                    "type": "XDP",
+                    "status": "active" if running else "inactive",
+                    "interface": getattr(firewall_manager, 'interface', 'eth0')
                 }
             ]
-        },
-        "rules_count": {
-            "total": len(firewall_rules),
-            "enabled": sum(1 for r in firewall_rules.values() if r.enabled),
-            "disabled": sum(1 for r in firewall_rules.values() if not r.enabled)
-        },
-        "threat_intel_count": len(threat_intel_db)
-    }
+            stats = firewall_manager.get_stats()
+            stats_dict = stats if isinstance(stats, dict) else getattr(stats, '__dict__', stats_dict)
+        elif hasattr(firewall_manager, 'get_programs'):
+            # Mock manager with list of dicts
+            programs = firewall_manager.get_programs() or []
+            active_programs = sum(1 for p in programs if (p.get("status") == "active"))
+            total_programs = len(programs)
+            stats = firewall_manager.get_stats() if hasattr(firewall_manager, 'get_stats') else {}
+            stats_dict = stats if isinstance(stats, dict) else getattr(stats, '__dict__', stats_dict)
+            running = active_programs > 0
+        else:
+            active_programs = 0
+            total_programs = 0
+        
+        # Resolve interface preference: manager → saved config → recommended
+        iface = getattr(firewall_manager, 'interface', None)
+        if not iface and isinstance(current_config, dict):
+            iface = current_config.get('ebpf', {}).get('interface')
+        interfaces_list = _list_network_interfaces()
+        if not iface:
+            iface = _recommend_interface(interfaces_list).get('name', 'eth0')
+        # If chosen iface not present on host, fallback to recommended and propagate
+        try:
+            names = {i.get('name') for i in interfaces_list}
+            if iface not in names and interfaces_list:
+                fallback = _recommend_interface(interfaces_list).get('name', iface)
+                iface = fallback
+                # also update in-memory config to keep UI consistent
+                try:
+                    setattr(firewall_manager, 'interface', iface)
+                except Exception:
+                    pass
+                try:
+                    if isinstance(current_config, dict):
+                        current_config.setdefault('ebpf', {})['interface'] = iface
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-# ================== INITIALIZE SAMPLE DATA ==================
+        # Provide non-null engine_state and normalized stats
+        engine_state = getattr(firewall_manager, 'engine_state', None) or 'auto'
+        sysinfo = _system_info()
+        cpu_usage = float(stats_dict.get("cpu_usage") or 0.0)
+        stats_out = {
+            "packets_processed": int(stats_dict.get("packets_processed") or 0),
+            "packets_dropped": int(stats_dict.get("packets_dropped") or 0),
+            "bytes_processed": int(stats_dict.get("bytes_processed") or 0),
+            "cpu_usage": cpu_usage,
+            "memory_total": int(sysinfo.get("total_memory") or 0),
+            "memory_used": int(sysinfo.get("used_memory") or 0),
+        }
+        # include API uptime to feed UI
+        uptime_sec = int((datetime.now(UTC) - start_time).total_seconds())
+        status_data = {
+            "running": running,
+            "active_programs": active_programs,
+            "total_programs": total_programs,
+            "programs": programs,
+            "stats": stats_out,
+            "interface": iface,
+            "engine_state": engine_state,
+            "interfaces": interfaces_list,
+            "vpp_interfaces": len(_vpp_interfaces()),
+            "uptime": uptime_sec,
+        }
+        
+        response = JSONResponse(content=status_data)
+        return add_cors_headers(response)
+    except Exception as e:
+        logger.error(f"Failed to get system status: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
 
-async def initialize_sample_data():
-    """Initialize with sample data for demonstration"""
-    # Sample firewall rules
-    sample_rules = [
-        FirewallRule(
-            name="Allow SSH",
-            description="Allow SSH access from management network",
-            source_ip="192.168.1.0/24",
-            dest_port="22",
-            protocol="tcp",
-            action="allow",
-            priority=10,
-            tags=["management", "ssh"]
-        ),
-        FirewallRule(
-            name="Allow HTTP/HTTPS",
-            description="Allow web traffic",
-            source_ip="any",
-            dest_port="80,443",
-            protocol="tcp",
-            action="allow",
-            priority=20,
-            tags=["web", "public"]
-        ),
-        FirewallRule(
-            name="Block Malicious IPs",
-            description="Block known malicious IP addresses",
-            source_ip="192.168.100.0/24",
-            dest_ip="any",
-            protocol="any",
-            action="deny",
-            priority=5,
-            tags=["security", "threat-intel"]
-        ),
-        FirewallRule(
-            name="Allow DNS",
-            description="Allow DNS queries",
-            source_ip="any",
-            dest_port="53",
-            protocol="udp",
-            action="allow",
-            priority=15,
-            tags=["dns", "infrastructure"]
-        )
-    ]
-    
-    for rule in sample_rules:
-        rule.id = generate_rule_id()
-        rule.created_at = datetime.now()
-        rule.modified_at = datetime.now()
-        firewall_rules[rule.id] = rule
-    
-    # Sample network objects
-    sample_objects = [
-        NetworkObject(
-            name="Internal Network",
-            type="network",
-            value="192.168.1.0/24",
-            description="Internal corporate network",
-            tags=["internal"]
-        ),
-        NetworkObject(
-            name="DMZ Network",
-            type="network",
-            value="10.0.1.0/24",
-            description="DMZ network for public services",
-            tags=["dmz", "public"]
-        ),
-        NetworkObject(
-            name="Management Server",
-            type="host",
-            value="192.168.1.10",
-            description="Primary management server",
-            tags=["management", "critical"]
-        )
-    ]
-    
-    for obj in sample_objects:
-        obj.id = f"obj_{uuid.uuid4().hex[:8]}"
-        obj.created_at = datetime.now()
-        network_objects[obj.id] = obj
-    
-    logger.info("Sample data initialized")
+# Settings Configuration API
+@app.get("/api/settings")
+async def get_settings():
+    """Get current system configuration."""
+    try:
+        # Load configuration from file or defaults
+        config_file = Path("config/cerberus.json")
+        if config_file.exists():
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+        else:
+            # Default configuration
+            config = {
+                "vpp": {
+                    "enabled": True,
+                    "workers": 4,
+                    "heapSize": "1G",
+                    "logLevel": "info",
+                    "plugins": ["ebpf-classify", "acl", "nat"]
+                },
+                "ebpf": {
+                    "enabled": True,
+                    "interface": "eth0",
+                    "queueId": 0,
+                    "verbose": False,
+                    "maps": {
+                        "maxEntries": 65536,
+                        "autoCleanup": True
+                    }
+                },
+                "security": {
+                    "authEnabled": False,
+                    "sessionTimeout": 3600,
+                    "maxLoginAttempts": 5,
+                    "encryption": "AES256",
+                    "certificates": {
+                        "autoRenew": True,
+                        "keySize": 2048
+                    }
+                },
+                "monitoring": {
+                    "realTime": True,
+                    "retentionDays": 30,
+                    "metricsInterval": 2000,
+                    "alerting": True,
+                    "exportFormat": "JSON"
+                },
+                "ui": {
+                    "theme": "light",
+                    "language": "en",
+                    "refreshInterval": 5000,
+                    "animations": True,
+                    "density": "standard"
+                }
+            }
+        
+        # keep in-memory copy for subsequent operations
+        global current_config
+        current_config = config
 
-# Initialize sample data on startup
-@app.on_event("startup")
-async def startup_event():
-    await initialize_sample_data()
-    logger.info("Cerberus-V Professional Firewall Backend started")
-    if REAL_SYSTEM_AVAILABLE:
-        logger.info("✅ Real VPP/eBPF system control available")
-    else:
-        logger.info("⚠️ Running in fallback mode - real system control not available")
+        response = JSONResponse(content={"success": True, "config": config})
+        return add_cors_headers(response)
+    except Exception as e:
+        logger.error(f"Failed to get settings: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
+
+@app.post("/api/settings")
+async def save_settings(config: dict):
+    """Save system configuration."""
+    try:
+        # Ensure config directory exists
+        config_dir = Path("config")
+        config_dir.mkdir(exist_ok=True)
+        
+        # Save configuration to file
+        config_file = config_dir / "cerberus.json"
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=2)
+        
+        # Update in-memory config
+        global current_config
+        current_config = config
+
+        # Apply configuration changes (implement as needed)
+        await apply_configuration_changes(config)
+        
+        log_audit_event(f"Configuration saved: {config_file}")
+        logger.info(f"✅ Configuration saved to {config_file}")
+        
+        response = JSONResponse(content={
+            "success": True, 
+            "message": "Configuration saved successfully",
+            "timestamp": datetime.now(UTC).isoformat()
+        })
+        return add_cors_headers(response)
+    except Exception as e:
+        logger.error(f"Failed to save settings: {e}")
+        error_response = JSONResponse(content={"error": str(e)}, status_code=500)
+        return add_cors_headers(error_response)
+
+async def apply_configuration_changes(config: dict):
+    """Apply configuration changes to running system."""
+    try:
+        # VPP configuration
+        if config.get("vpp", {}).get("enabled"):
+            logger.info("Applying VPP configuration...")
+            # TODO: Apply VPP settings
+        
+        # eBPF configuration
+        if config.get("ebpf", {}).get("enabled"):
+            logger.info("Applying eBPF configuration...")
+            # Propagate selected interface to firewall manager (safe in demo mode)
+            try:
+                iface = config.get("ebpf", {}).get("interface")
+                if iface:
+                    setattr(firewall_manager, 'interface', iface)
+                    logger.info(f"eBPF interface set to {iface}")
+                # Optional engine_state (auto|xdp|tc); for Wi‑Fi рекомендуем tc
+                engine_state = config.get("ebpf", {}).get("engine_state")
+                if engine_state in ("auto", "xdp", "tc"):
+                    setattr(firewall_manager, 'engine_state', engine_state)
+                    logger.info(f"eBPF engine_state set to {engine_state}")
+                # If Wi‑Fi interface chosen, force TC as safer default unless explicitly overridden
+                try:
+                    if Path(f"/sys/class/net/{iface}/wireless").exists():
+                        if engine_state in (None, "auto", "xdp"):
+                            setattr(firewall_manager, 'engine_state', 'tc')
+                            logger.info("Wi‑Fi detected: forcing engine_state=tc for safety")
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.warning(f"Failed to set eBPF interface: {e}")
+            
+        # Security configuration
+        logger.info("Applying security configuration...")
+        # TODO: Apply security settings
+        
+        logger.info("✅ Configuration changes applied successfully")
+    except Exception as e:
+        logger.error(f"Failed to apply configuration changes: {e}")
+        raise
+
+# Error handlers
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    """Global exception handler."""
+    logger.error(f"Unhandled exception: {exc}")
+    return {"error": "Internal server error", "detail": str(exc)}
 
 if __name__ == "__main__":
-    print("🔥 Запуск Cerberus-V Professional Firewall Backend")
-    print("🛡️ Production VPP/eBPF Firewall Management System")
-    if REAL_SYSTEM_AVAILABLE:
-        print("✅ Real system integration: ACTIVE")
-    else:
-        print("⚠️ Real system integration: FALLBACK MODE")
-    
-    uvicorn.run(
-        app, 
-        host="127.0.0.1",
-        port=8081,
-        log_level="info"
-    ) 
+    logger.info("Starting Cerberus-V API server...")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info") 

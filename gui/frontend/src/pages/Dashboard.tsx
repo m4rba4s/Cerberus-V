@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // VPP eBPF Firewall Dashboard - Senior Edition
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Grid,
@@ -19,13 +19,11 @@ import {
   FormControl,
   InputLabel,
   Switch,
-  FormControlLabel,
+  
   Tabs,
   Tab,
   TextField,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
+  
   List,
   ListItem,
   ListItemText,
@@ -47,21 +45,22 @@ import {
   Speed,
   Memory,
   Storage,
-  ExpandMore,
+  
   Add,
   Delete,
   Edit,
-  Save,
-  Settings,
+  
   Shield,
   Visibility,
-  VisibilityOff,
+  
   FlashOn,
   School,
 } from '@mui/icons-material';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import { useWebSocket } from '../contexts/WebSocketContext';
-import { firewallAPI } from '../services/api';
+ 
+import EBPFControl from '../components/EBPFControl';
+import LiveToggle from '../components/LiveToggle';
 
 // Firewall Configuration Types
 interface FirewallMode {
@@ -153,7 +152,7 @@ const FIREWALL_MODES: FirewallMode[] = [
 
 // Configuration Panel Component
 const FirewallConfigurationPanel: React.FC = () => {
-  const { data, isConnected } = useWebSocket();
+  const { isConnected } = useWebSocket();
   const [selectedMode, setSelectedMode] = useState<string>('balanced');
   const [customRules, setCustomRules] = useState<FirewallRule[]>([]);
   const [trafficFilters, setTrafficFilters] = useState<TrafficFilter[]>([]);
@@ -613,14 +612,17 @@ const StatsCard: React.FC<{
 // Firewall Status Card - Edition
 const FirewallStatusCard: React.FC = () => {
   const { data, isConnected, connectionState, forceReconnect } = useWebSocket();
+  const modeLabel = (data as any)?.mode === 'live' ? 'LIVE' : 'SIMULATION';
   
   // Extract real firewall status from WebSocket data
   const firewallData = data?.firewall || {};
   const engineStatus = firewallData.engine_status || 'inactive';
-  const protectionMode = firewallData.protection_mode || 'none';
+  const protectionMode = (firewallData.protection_mode || (firewallData as any).engine_state || 'auto') as string;
+  const datapath = protectionMode;
   const dualProtectionActive = firewallData.dual_protection_active || false;
   
   const isFirewallRunning = engineStatus === 'running';
+  const iface = firewallData.interface || 'eth0';
   const firewallUptime = data?.system?.uptime ? 
     `${Math.floor(data.system.uptime / 3600)}h ${Math.floor((data.system.uptime % 3600) / 60)}m` : 
     'N/A';
@@ -672,13 +674,19 @@ const FirewallStatusCard: React.FC = () => {
               variant="filled"
               sx={{ fontWeight: 'bold', mb: 1 }}
             />
+            <Typography variant="body2" color="text.secondary">
+              Mode: {modeLabel}
+            </Typography>
             {isFirewallRunning && (
               <Box>
                 <Typography variant="body2" color="text.secondary">
                   ⏱ Uptime: {firewallUptime}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  🛡️ Protection: {protectionMode}
+                  🛡️ Datapath: {datapath}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  🔌 Interface: {iface}
                 </Typography>
                 {dualProtectionActive && (
                   <Typography variant="body2" color="success.main">
@@ -850,7 +858,7 @@ const NetworkInterfaceCard: React.FC = () => {
           })
         ) : (
           <Alert severity="info">
-            No interface data available
+            Discovery disabled (SIM). Select NIC in Settings
           </Alert>
         )}
       </CardContent>
@@ -972,12 +980,27 @@ const QuickActionsPanel: React.FC = () => {
       if (response.ok) {
         const status = await response.json();
         console.log('🔍 System Status:', status);
-        alert(`System Status:\nEngine: ${status.engine_status}\nProtection Mode: ${status.protection_mode}\nDemo Mode: ${status.demo_mode}`);
       }
     } catch (error) {
       console.error('❌ Error getting system status:', error);
     }
   };
+
+  // Poll real engine status to keep UI synced even без WebSocket
+  useEffect(() => {
+    const pull = async () => {
+      try {
+        const res = await fetch('/api/system/status');
+        if (!res.ok) return;
+        const json = await res.json();
+        const running = !!json?.running;
+        setEngineStatus(running ? 'running' : 'inactive');
+      } catch (_) {}
+    };
+    pull();
+    const id = setInterval(pull, 3000);
+    return () => { clearInterval(id); };
+  }, []);
 
   return (
     <Grid container spacing={2}>
@@ -1042,11 +1065,31 @@ const Dashboard: React.FC = () => {
   const systemData = data?.system || {};
   
   // Real firewall statistics
-  const packetsProcessed = firewallData.packets_processed || 0;
-  const packetsBlocked = firewallData.packets_blocked || 0; 
-  const packetsReceived = firewallData.packets_received || 0;
+  const packetsProcessed = Number(firewallData.packets_processed || 0);
+  const packetsBlocked = Number(firewallData.packets_blocked || 0);
   const packetsTotal = packetsProcessed + packetsBlocked;
-  const ppsCurrently = Math.floor(packetsProcessed / 60); // Approximate PPS
+
+  // PPS EWMA smoothing (a=0.3) with basic clamping
+  const ppsRef = useRef<{ lastPackets: number; lastTs: number; ewma: number }>({
+    lastPackets: packetsProcessed,
+    lastTs: Date.now(),
+    ewma: 0,
+  });
+  const [ppsSmoothed, setPpsSmoothed] = useState<number>(0);
+
+  useEffect(() => {
+    const now = Date.now();
+    const dt = (now - ppsRef.current.lastTs) / 1000;
+    if (dt >= 0.5) {
+      const delta = Math.max(0, packetsProcessed - ppsRef.current.lastPackets);
+      const inst = Math.max(0, delta / dt);
+      const a = 0.3;
+      const ewma = a * inst + (1 - a) * ppsRef.current.ewma;
+      const clamped = Math.min(Math.max(ewma, 0), 5_000_000);
+      ppsRef.current = { lastPackets: packetsProcessed, lastTs: now, ewma: clamped };
+      setPpsSmoothed(clamped);
+    }
+  }, [packetsProcessed]);
   
   // System metrics
   const cpuUsage = systemData.cpu_usage || 0;
@@ -1075,7 +1118,7 @@ const Dashboard: React.FC = () => {
         time: new Date().toLocaleTimeString(),
         blocked: packetsBlocked,
         allowed: packetsProcessed,
-        pps: ppsCurrently,
+        pps: Math.round(ppsSmoothed),
       };
 
       setChartData(prev => {
@@ -1083,7 +1126,7 @@ const Dashboard: React.FC = () => {
         return updated.slice(-20); // Keep last 20 points
       });
     }
-  }, [data, packetsBlocked, packetsProcessed, ppsCurrently]);
+  }, [data, packetsBlocked, packetsProcessed, ppsSmoothed]);
 
   return (
     <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
@@ -1135,7 +1178,7 @@ const Dashboard: React.FC = () => {
         <Grid item xs={12} sm={6} md={3}>
           <StatsCard
             title="Current PPS"
-            value={ppsCurrently.toFixed(1)}
+            value={ppsSmoothed.toFixed(0)}
             subtitle="packets/sec"
             icon={<Speed />}
             color="primary"
@@ -1280,6 +1323,16 @@ const Dashboard: React.FC = () => {
               <QuickActionsPanel />
             </CardContent>
           </Card>
+        </Grid>
+
+        {/* LIVE Mode Toggle */}
+        <Grid item xs={12}>
+          <LiveToggle />
+        </Grid>
+
+        {/* eBPF Control Panel */}
+        <Grid item xs={12}>
+          <EBPFControl />
         </Grid>
       </Grid>
     </Container>

@@ -1,0 +1,5 @@
+[cursor]
+name=Cursor Editor
+baseurl=https://download.cursor.sh/linux/rpm/x86_64/
+enabled=1
+gpgcheck=0 

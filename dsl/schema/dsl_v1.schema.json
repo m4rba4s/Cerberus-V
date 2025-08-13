@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cerberus-v.local/schema/dsl_v1.schema.json",
+  "title": "Cerberus-V Policy DSL v1",
+  "type": "object",
+  "required": ["version", "policy"],
+  "properties": {
+    "version": { "const": 1 },
+    "zones": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string", "pattern": "^((25[0-5]|2[0-4]\\d|[01]?\\d?\\d)(\\.(?!$)|$)){4}(\/([0-9]|[12]\\d|3[0-2]))$" }
+      }
+    },
+    "services": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["proto", "ports"],
+        "properties": {
+          "proto": { "type": "string", "enum": ["tcp", "udp", "icmp", "any"] },
+          "ports": {
+            "type": "array",
+            "items": { "type": ["integer", "string" ] }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "policy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "action", "priority"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "from": { "type": ["string", "array" ] },
+          "to": { "type": ["string", "array" ] },
+          "service": { "type": ["string", "object"] },
+          "proto": { "type": "string" },
+          "src": { "type": ["string", "array"] },
+          "dst": { "type": ["string", "array"] },
+          "src_port": { "type": ["integer", "string"] },
+          "dst_port": { "type": ["integer", "string"] },
+          "action": { "type": "string", "enum": ["allow", "drop", "mark", "rate"] },
+          "mark": { "type": ["integer", "string" ] },
+          "rate": { "type": "string" },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 65535 }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}
+

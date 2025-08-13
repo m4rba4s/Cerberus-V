@@ -1,0 +1,17 @@
+[Unit]
+Description=Cerberus-V Network Recovery Service
+After=network-online.target
+Wants=network-online.target
+PartOf=cerberus.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/home/outspoken/Cerberus-V/scripts/panic.sh
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target 

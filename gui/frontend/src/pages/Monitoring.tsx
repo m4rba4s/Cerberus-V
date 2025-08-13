@@ -1,81 +1,10 @@
 // VPP eBPF Firewall Dashboard - Monitoring Interface
 // Production-grade real-time monitoring with advanced visualizations
 
-import React, { useState, useEffect, useRef } from 'react';
-import {
-  Box,
-  Grid,
-  Paper,
-  Typography,
-  Card,
-  CardContent,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Chip,
-  LinearProgress,
-  IconButton,
-  Tooltip,
-  Switch,
-  FormControlLabel,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
-  Alert,
-  AlertTitle,
-  Button,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  TextField
-} from '@mui/material';
-import {
-  Timeline,
-  Security,
-  NetworkCheck,
-  Speed,
-  Memory,
-  Storage,
-  Warning,
-  CheckCircle,
-  Error,
-  Info,
-  Refresh,
-  Settings,
-  Download,
-  Upload,
-  Visibility,
-  VisibilityOff,
-  PlayArrow,
-  Pause,
-  Stop,
-  FilterList,
-  Search
-} from '@mui/icons-material';
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as RechartsTooltip,
-  Legend,
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  ResponsiveContainer,
-  ScatterChart,
-  Scatter
-} from 'recharts';
+import React, { useState, useEffect } from 'react';
+import { Box, Grid, Typography, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Chip, LinearProgress, IconButton, Switch, FormControlLabel, Select, MenuItem, FormControl, InputLabel, Alert, AlertTitle, Button, Dialog, DialogTitle, DialogContent, DialogActions, TextField, Tooltip } from '@mui/material';
+import { Timeline, Security, NetworkCheck, Speed, CheckCircle, Error as ErrorIcon, Download, Visibility } from '@mui/icons-material';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useWebSocket } from '../contexts/WebSocketContext';
 
 // color schemes for professional visualization
@@ -90,7 +19,7 @@ const COLORS = {
   surface: '#ffffff'
 };
 
-const CHART_COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff7300', '#00ff00', '#ff0000'];
+// const CHART_COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff7300', '#00ff00', '#ff0000'];
 
 // Data interfaces
 interface TrafficMetrics {
@@ -135,7 +64,7 @@ interface ConnectionInfo {
 
 const Monitoring: React.FC = () => {
   // WebSocket data
-  const { data, isConnected } = useWebSocket();
+  const { isConnected } = useWebSocket();
   
   // State management
   const [trafficHistory, setTrafficHistory] = useState<TrafficMetrics[]>([]);
@@ -150,8 +79,8 @@ const Monitoring: React.FC = () => {
   const [alertsEnabled, setAlertsEnabled] = useState(true);
   
   // Refs for scrolling
-  const threatTableRef = useRef<HTMLDivElement>(null);
-  const connectionTableRef = useRef<HTMLDivElement>(null);
+  // const threatTableRef = useRef<HTMLDivElement>(null);
+  // const connectionTableRef = useRef<HTMLDivElement>(null);
 
   // Generate realistic monitoring data
   useEffect(() => {
@@ -315,12 +244,7 @@ const Monitoring: React.FC = () => {
 
   // Status icon mapping
   const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'Active': return <Error color="error" />;
-      case 'Blocked': return <CheckCircle color="success" />;
-      case 'Resolved': return <Info color="info" />;
-      default: return <Warning color="warning" />;
-    }
+    return status === 'Active' ? <ErrorIcon color="error" /> : <CheckCircle color="success" />;
   };
 
   // System metric status color
@@ -363,7 +287,7 @@ const Monitoring: React.FC = () => {
         <Typography variant="h4" sx={{ fontWeight: 'bold', color: 'primary.main', display: 'flex', alignItems: 'center', gap: 2 }}>
           🔍 Security Monitoring
           <Chip 
-            icon={isConnected ? <CheckCircle /> : <Error />}
+            icon={isConnected ? <CheckCircle /> : <ErrorIcon />}
             label={isConnected ? 'Connected' : 'Disconnected'}
             color={isConnected ? 'success' : 'error'}
             variant="outlined"

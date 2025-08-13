@@ -1,0 +1,56 @@
+name: CI Smoke
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend deps
+        working-directory: gui/backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt flake8 black
+
+      - name: Lint (flake8)
+        working-directory: gui/backend
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Format check (black)
+        working-directory: gui/backend
+        run: black --check .
+
+      - name: Run backend and integration curls
+        working-directory: gui/backend
+        run: |
+          nohup python -m uvicorn main:app --host 127.0.0.1 --port 8000 --log-level warning &
+          for i in {1..20}; do curl -fsS http://127.0.0.1:8000/api/system/status >/dev/null && break || sleep 0.5; done
+          curl -fsS http://127.0.0.1:8000/api/system/status | jq '.running' || true
+          curl -fsS http://127.0.0.1:8000/api/analytics/geo | jq '.geo' || true
+          curl -fsS http://127.0.0.1:8000/api/obs/syscalls | jq '.events | length' || true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend deps and build
+        working-directory: gui/frontend
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+
+

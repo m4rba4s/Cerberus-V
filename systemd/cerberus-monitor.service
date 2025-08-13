@@ -1,0 +1,31 @@
+[Unit]
+Description=Cerberus-V System Monitor
+Documentation=https://github.com/m4rba4s/Cerberus-V
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=outspoken
+Group=outspoken
+WorkingDirectory=/home/outspoken/Cerberus-V
+ExecStart=/home/outspoken/Cerberus-V/scripts/system-monitor.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cerberus-monitor
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log /home/outspoken/Cerberus-V
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target 

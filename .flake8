@@ -1,0 +1,15 @@
+[flake8]
+max-line-length = 100
+extend-exclude =
+    .git,
+    __pycache__,
+    node_modules,
+    venv,
+    .venv,
+    gui/backend/venv,
+    **/site-packages/**,
+    build,
+    dist
+per-file-ignores =
+    gui/backend/main.py:E402
+

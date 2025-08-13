@@ -18,6 +18,7 @@ import Monitoring from './pages/Monitoring';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
 import LoginPage from './pages/LoginPage';
+import SystemCalls from './pages/SystemCalls';
 
 // Create React Query client
 const queryClient = new QueryClient({
@@ -168,6 +169,7 @@ const App: React.FC = () => {
                         <Route path="/monitoring" element={<Monitoring />} />
                         <Route path="/analytics" element={<Analytics />} />
                         <Route path="/settings" element={<Settings />} />
+                        <Route path="/syscalls" element={<SystemCalls />} />
                       </Routes>
                     </AppLayout>
                   }

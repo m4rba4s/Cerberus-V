@@ -22,6 +22,11 @@ type PrometheusExporter struct {
 	packetsDropped   *prometheus.CounterVec
 	packetsAllowed   *prometheus.CounterVec
 	bytesProcessed   *prometheus.CounterVec
+    // Compatibility metrics expected by tests
+    uptimeSeconds    prometheus.Gauge
+    activeRules      prometheus.Gauge
+    packetsTotal     prometheus.Counter
+    bytesTotal       prometheus.Counter
 	activeConnections prometheus.Gauge
 	ruleCount        prometheus.Gauge
 	systemLoad       prometheus.Gauge
@@ -74,6 +79,35 @@ func NewPrometheusExporter(port int) *PrometheusExporter {
 		},
 		[]string{"interface", "direction"},
 	)
+
+    // Compatibility metrics expected by integration tests
+    pe.uptimeSeconds = prometheus.NewGauge(
+        prometheus.GaugeOpts{
+            Name: "cerberus_uptime_seconds",
+            Help: "Uptime in seconds since Cerberus control plane start",
+        },
+    )
+
+    pe.activeRules = prometheus.NewGauge(
+        prometheus.GaugeOpts{
+            Name: "cerberus_active_rules",
+            Help: "Number of active firewall rules (compat)",
+        },
+    )
+
+    pe.packetsTotal = prometheus.NewCounter(
+        prometheus.CounterOpts{
+            Name: "cerberus_packets_total",
+            Help: "Total number of packets processed (compat)",
+        },
+    )
+
+    pe.bytesTotal = prometheus.NewCounter(
+        prometheus.CounterOpts{
+            Name: "cerberus_bytes_total",
+            Help: "Total number of bytes processed (compat)",
+        },
+    )
 	
 	pe.activeConnections = prometheus.NewGauge(
 		prometheus.GaugeOpts{
@@ -165,6 +199,10 @@ func NewPrometheusExporter(port int) *PrometheusExporter {
 		pe.packetsDropped,
 		pe.packetsAllowed,
 		pe.bytesProcessed,
+        pe.uptimeSeconds,
+        pe.activeRules,
+        pe.packetsTotal,
+        pe.bytesTotal,
 		pe.activeConnections,
 		pe.ruleCount,
 		pe.systemLoad,
@@ -199,6 +237,16 @@ func (pe *PrometheusExporter) Start() error {
 			log.Printf("❌ Prometheus exporter error: %v", err)
 		}
 	}()
+
+    // Uptime gauge updater
+    start := time.Now()
+    go func() {
+        ticker := time.NewTicker(1 * time.Second)
+        defer ticker.Stop()
+        for range ticker.C {
+            pe.uptimeSeconds.Set(time.Since(start).Seconds())
+        }
+    }()
 	
 	return nil
 }
@@ -223,14 +271,18 @@ func (pe *PrometheusExporter) UpdateMetrics(stats *SystemStats) {
 	pe.packetsDropped.WithLabelValues(stats.Interface, "firewall").Add(float64(stats.PacketsDropped))
 	pe.packetsAllowed.WithLabelValues(stats.Interface, "tcp").Add(float64(stats.TCPConnections))
 	pe.packetsAllowed.WithLabelValues(stats.Interface, "udp").Add(float64(stats.UDPConnections))
+    // Compat totals (monotonic)
+    pe.packetsTotal.Add(float64(stats.PacketsRx + stats.PacketsTx))
 	
 	// Bytes processed
 	pe.bytesProcessed.WithLabelValues(stats.Interface, "rx").Add(float64(stats.BytesRx))
 	pe.bytesProcessed.WithLabelValues(stats.Interface, "tx").Add(float64(stats.BytesTx))
+    pe.bytesTotal.Add(float64(stats.BytesRx + stats.BytesTx))
 	
 	// System metrics
 	pe.activeConnections.Set(float64(stats.ActiveConnections))
 	pe.ruleCount.Set(float64(stats.FirewallRules))
+    pe.activeRules.Set(float64(stats.FirewallRules))
 	pe.systemLoad.Set(stats.SystemLoad)
 	pe.memoryUsage.Set(float64(stats.MemoryUsage))
 	

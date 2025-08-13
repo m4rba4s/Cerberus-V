@@ -2,7 +2,7 @@
 // Status Indicator Component
 
 import React from 'react';
-import { Box, Typography, Chip } from '@mui/material';
+import { Box, Chip } from '@mui/material';
 import { CheckCircle, Error, Warning, HourglassEmpty } from '@mui/icons-material';
 
 interface StatusIndicatorProps {

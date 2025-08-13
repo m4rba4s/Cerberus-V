@@ -2,101 +2,11 @@
 // Enterprise-grade system configuration and management
 
 import React, { useState, useEffect } from 'react';
-import {
-  Box,
-  Grid,
-  Paper,
-  Typography,
-  Card,
-  CardContent,
-  Switch,
-  FormControlLabel,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
-  TextField,
-  Button,
-  Divider,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemIcon,
-  ListItemSecondaryAction,
-  IconButton,
-  Chip,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Alert,
-  AlertTitle,
-  Slider,
-  Tabs,
-  Tab,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
-  Tooltip,
-  Badge,
-  LinearProgress
-} from '@mui/material';
-import {
-  Settings as SettingsIcon,
-  Security,
-  NetworkCheck,
-  Speed,
-  Memory,
-  Notifications,
-  Save,
-  Restore,
-  Download,
-  Upload,
-  Delete,
-  Edit,
-  Add,
-  ExpandMore,
-  Warning,
-  CheckCircle,
-  Error,
-  Info,
-  Visibility,
-  VisibilityOff,
-  Shield,
-  VpnLock,
-  Router,
-  Computer,
-  Dashboard,
-  ColorLens,
-  Language,
-  Schedule,
-  Backup,
-  Update,
-  Build,
-  Code,
-  DataUsage,
-  FilterList
-} from '@mui/icons-material';
+import { Box, Grid, Typography, Switch, FormControlLabel, Select, MenuItem, FormControl, InputLabel, TextField, Button, Chip, Alert, AlertTitle, Slider, Tabs, Tab, Accordion, AccordionSummary, AccordionDetails, List, ListItem, ListItemIcon, ListItemText, ListItemSecondaryAction, CircularProgress, Tooltip } from '@mui/material';
+import { Security, Save, Restore, Download, ExpandMore, Warning, VpnLock, Router, Computer, Dashboard, ColorLens, Language, Build, DataUsage, CheckCircle, Notifications, Shield, Error as ErrorIcon } from '@mui/icons-material';
 import { useWebSocket } from '../contexts/WebSocketContext';
 
-const SETTINGS_COLORS = {
-  primary: '#1565c0',
-  secondary: '#c62828',
-  accent: '#2e7d32',
-  warning: '#f57f17',
-  error: '#d32f2f',
-  info: '#0277bd',
-  success: '#388e3c',
-  background: '#fafafa',
-  surface: '#ffffff'
-};
-
-interface SettingsSection {
-  id: string;
-  title: string;
-  icon: React.ReactNode;
-  description: string;
-}
+// (removed unused SETTINGS_COLORS and SettingsSection)
 
 interface SystemConfig {
   vpp: {
@@ -109,6 +19,7 @@ interface SystemConfig {
   ebpf: {
     enabled: boolean;
     interface: string;
+    engine_state?: 'auto' | 'xdp' | 'tc';
     queueId: number;
     verbose: boolean;
     maps: {
@@ -168,10 +79,10 @@ function TabPanel(props: TabPanelProps) {
 }
 
 const SettingsPage: React.FC = () => {
-  const { data, isConnected } = useWebSocket();
+  const { data } = useWebSocket();
   
-  // Get real interface name from WebSocket data
-  const primaryInterface = data?.data?.interfaces?.[0]?.name || 'eth0';
+  // Primary interface source: WS firewall.interface → current config → recommended from API
+  const wsIface = (data as any)?.firewall?.interface as string | undefined;
   
   // State management
   const [currentTab, setCurrentTab] = useState(0);
@@ -185,7 +96,8 @@ const SettingsPage: React.FC = () => {
     },
     ebpf: {
       enabled: true,
-      interface: primaryInterface, // Use real interface name
+      interface: 'eth0',
+      engine_state: 'auto',
       queueId: 0,
       verbose: false,
       maps: {
@@ -221,50 +133,78 @@ const SettingsPage: React.FC = () => {
   
   // Update interface when WebSocket data changes
   useEffect(() => {
-    if (data?.data?.interfaces?.[0]?.name) {
-      setConfig(prev => ({
-        ...prev,
-        ebpf: {
-          ...prev.ebpf,
-          interface: data.data.interfaces[0].name
+    const next = wsIface;
+    if (next) {
+      setConfig(prev => {
+        const chosen = { ...prev, ebpf: { ...prev.ebpf, interface: next } } as SystemConfig;
+        // If Wi‑Fi is selected and mode is auto or xdp, force TC for safety
+        const selected = ifaceList.find(i => i.name === next);
+        if (selected?.type === 'wireless') {
+          const forced = (prev.ebpf.engine_state === 'xdp' || prev.ebpf.engine_state === 'auto') ? 'tc' : prev.ebpf.engine_state;
+          return { ...chosen, ebpf: { ...chosen.ebpf, engine_state: forced || 'tc' } };
         }
-      }));
+        return chosen;
+      });
     }
-  }, [data?.data?.interfaces]);
+  }, [wsIface]);
+  
+  // Load current backend config on mount
+  useEffect(() => {
+    const loadConfig = async () => {
+      try {
+        const res = await fetch('/api/settings');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (json && json.config) {
+          setConfig(json.config as SystemConfig);
+          setUnsavedChanges(false);
+        }
+      } catch (e) {
+        // keep defaults on error
+        // console.warn('Failed to load settings:', e);
+      }
+    };
+    loadConfig();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Fetch interfaces for dropdown (portable via backend API)
+  useEffect(() => {
+    const fetchIfaces = async () => {
+      setIfaceLoading(true);
+      setIfaceError(null);
+      try {
+        const res = await fetch('/api/network/interfaces');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        const interfaces = (json.interfaces || []) as Array<{name: string; type: string; is_up: boolean; is_default: boolean; ip_addresses: string[];}>;
+        setIfaceList(interfaces);
+        if (interfaces.length > 0 && !config.ebpf.interface) {
+          setConfig(prev => ({
+            ...prev,
+            ebpf: { ...prev.ebpf, interface: json.recommended?.name || interfaces[0].name }
+          }));
+        }
+      } catch (e: any) {
+        setIfaceError(e?.message || 'Failed to load interfaces');
+      } finally {
+        setIfaceLoading(false);
+      }
+    };
+    fetchIfaces();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   
   const [unsavedChanges, setUnsavedChanges] = useState(false);
-  const [showBackupDialog, setShowBackupDialog] = useState(false);
-  const [showRestoreDialog, setShowRestoreDialog] = useState(false);
+  // (remove unused dialog state)
   const [isLoading, setIsLoading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
+  const [ifaceList, setIfaceList] = useState<Array<{name: string; type: string; is_up: boolean; is_default: boolean; ip_addresses: string[];}>>([]);
+  const [ifaceLoading, setIfaceLoading] = useState(false);
+  const [ifaceError, setIfaceError] = useState<string | null>(null);
 
   // Settings sections
-  const settingsSections: SettingsSection[] = [
-    {
-      id: 'system',
-      title: 'System Configuration',
-      icon: <Computer color="primary" />,
-      description: 'Core system and performance settings'
-    },
-    {
-      id: 'security',
-      title: 'Security & Authentication',
-      icon: <Security color="primary" />,
-      description: 'Security policies and access control'
-    },
-    {
-      id: 'monitoring',
-      title: 'Monitoring & Alerts',
-      icon: <Dashboard color="primary" />,
-      description: 'Monitoring configuration and alerting'
-    },
-    {
-      id: 'interface',
-      title: 'User Interface',
-      icon: <ColorLens color="primary" />,
-      description: 'UI preferences and customization'
-    }
-  ];
+  // (remove unused settingsSections placeholder)
 
   // Handle configuration changes
   const updateConfig = (section: keyof SystemConfig, field: string, value: any) => {
@@ -272,19 +212,21 @@ const SettingsPage: React.FC = () => {
       ...prev,
       [section]: {
         ...prev[section],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         [field]: value
       }
     }));
     setUnsavedChanges(true);
   };
 
-  const updateNestedConfig = (section: keyof SystemConfig, subsection: string, field: string, value: any) => {
+  const updateNestedConfig = (section: keyof SystemConfig, subsection: 'maps' | 'certificates', field: string, value: any) => {
     setConfig(prev => ({
       ...prev,
       [section]: {
         ...prev[section],
         [subsection]: {
-          ...prev[section][subsection as keyof typeof prev[section]],
+          // @ts-expect-error nested dynamic
+          ...prev[section][subsection],
           [field]: value
         }
       }
@@ -298,18 +240,37 @@ const SettingsPage: React.FC = () => {
     setIsLoading(true);
     
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // REAL API call to backend
+      const response = await fetch('/api/settings', { 
+        method: 'POST', 
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(config) 
+      });
       
-      // Here you would make the actual API call
-      // await fetch('/api/settings', { method: 'POST', body: JSON.stringify(config) });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const result = await response.json();
+      console.log('✅ Config saved:', result);
       
       setSaveStatus('success');
       setUnsavedChanges(false);
+      // re-load from backend to reflect persisted values (e.g., heapSize 2G)
+      try {
+        const res = await fetch('/api/settings');
+        if (res.ok) {
+          const json = await res.json();
+          if (json && json.config) setConfig(json.config as SystemConfig);
+        }
+      } catch (_) {}
       
       // Auto-reset status after 3 seconds
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (error) {
+      console.error('❌ Save failed:', error);
       setSaveStatus('error');
       setTimeout(() => setSaveStatus('idle'), 3000);
     } finally {
@@ -329,7 +290,7 @@ const SettingsPage: React.FC = () => {
       },
       ebpf: {
         enabled: true,
-        interface: primaryInterface, // Use real interface name
+        interface: wsIface || (ifaceList.find(i=>i.is_default)?.name || ifaceList[0]?.name || 'eth0'),
         queueId: 0,
         verbose: false,
         maps: {
@@ -557,15 +518,29 @@ const SettingsPage: React.FC = () => {
 
               <Grid container spacing={2}>
                 <Grid item xs={8}>
-                  <TextField
-                    label="Network Interface"
-                    value={config.ebpf.interface}
-                    onChange={(e) => updateConfig('ebpf', 'interface', e.target.value)}
-                    fullWidth
-                    variant="outlined"
-                    disabled={!config.ebpf.enabled}
-                    helperText={`Current: ${primaryInterface}`}
-                  />
+                  <FormControl fullWidth disabled={!config.ebpf.enabled || ifaceLoading}>
+                    <InputLabel>Network Interface</InputLabel>
+                    <Select
+                      value={config.ebpf.interface}
+                      label="Network Interface"
+                      onChange={(e) => updateConfig('ebpf', 'interface', e.target.value)}
+                    >
+                      {ifaceList.map((i) => (
+                        <MenuItem key={i.name} value={i.name}>
+                          {i.name} {i.is_default ? '(default)' : ''} {i.is_up ? '' : '(down)'} {i.type === 'wireless' ? '— Wi‑Fi (XDP generic only, not recommended)' : ''}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <Box sx={{ mt: 0.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+                    {ifaceLoading && <CircularProgress size={14} />}
+                    <Typography variant="caption" color="text.secondary">
+                      Current: {wsIface || config.ebpf.interface || (ifaceList.find(i=>i.is_default)?.name || ifaceList[0]?.name || 'eth0')}
+                    </Typography>
+                    {ifaceError && (
+                      <Typography variant="caption" color="error.main">{ifaceError}</Typography>
+                    )}
+                  </Box>
                 </Grid>
                 <Grid item xs={4}>
                   <TextField
@@ -579,6 +554,30 @@ const SettingsPage: React.FC = () => {
                   />
                 </Grid>
               </Grid>
+              <Grid container spacing={2} sx={{ mt: 1 }}>
+                <Grid item xs={12} md={6}>
+                  <FormControl fullWidth disabled={!config.ebpf.enabled}>
+                    <InputLabel>Datapath Mode</InputLabel>
+                    <Tooltip title={(ifaceList.find(i => i.name === config.ebpf.interface)?.type === 'wireless') ? 'Wi‑Fi поддерживает только XDP-generic. Рекомендуется режим TC.' : 'auto подберёт лучший режим (XDP для ethernet, TC для Wi‑Fi)'}>
+                      <Select
+                        value={config.ebpf.engine_state || 'auto'}
+                        label="Datapath Mode"
+                        onChange={(e) => updateConfig('ebpf', 'engine_state', e.target.value)}
+                      >
+                        <MenuItem value="auto">auto (recommended)</MenuItem>
+                        <MenuItem value="xdp" disabled={ifaceList.find(i => i.name === config.ebpf.interface)?.type === 'wireless'}>xdp (wired NICs)</MenuItem>
+                        <MenuItem value="tc">tc (Wi‑Fi safe)</MenuItem>
+                      </Select>
+                    </Tooltip>
+                  </FormControl>
+                </Grid>
+              </Grid>
+              {/* Auto select TC when Wi‑Fi is chosen */}
+              {!!config.ebpf.interface && ifaceList.find(i => i.name === config.ebpf.interface && i.type === 'wireless') && (
+                <Alert severity="warning" sx={{ mt: 1 }}>
+                  Wi‑Fi supports only XDP-generic; performance not guaranteed. Datapath will default to TC for stability.
+                </Alert>
+              )}
 
               <Box sx={{ mt: 3 }}>
                 <FormControlLabel
@@ -924,7 +923,7 @@ const SettingsPage: React.FC = () => {
                 </ListItem>
                 <ListItem>
                   <ListItemIcon>
-                    <Error color="disabled" />
+                    <ErrorIcon color="disabled" />
                   </ListItemIcon>
                   <ListItemText primary="Slack Integration" />
                   <ListItemSecondaryAction>
@@ -933,7 +932,7 @@ const SettingsPage: React.FC = () => {
                 </ListItem>
                 <ListItem>
                   <ListItemIcon>
-                    <Error color="disabled" />
+                    <ErrorIcon color="disabled" />
                   </ListItemIcon>
                   <ListItemText primary="Webhook" />
                   <ListItemSecondaryAction>

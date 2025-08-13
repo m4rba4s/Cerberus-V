@@ -1,0 +1,663 @@
+# 🎯 Executive Summary
+
+**Cerberus-V** - это **элитный APT-уровневый фаерволл** с **XDP/eBPF** технологиями. Основная проблема: **XDP на Wi-Fi интерфейсах вызывает системные сбои** и **потерю сетевого соединения**.
+
+---
+
+# ⚠️ Critical Issues Identified
+
+## 1. **XDP on Wi-Fi = SYSTEM DEATH**
+- **Wi-Fi драйверы** (`ath9k_htc`, `iwlwifi`, `rtl8xxxu`) **НЕ поддерживают** native XDP
+- **XDP программы** на Wi-Fi вызывают **kernel panic** или **тихий отказ**
+- **NetworkManager** пересоздает интерфейс при XDP failure
+- **Результат**: Полная потеря сетевого соединения
+
+## 2. **Cursor + eBPF Permission Chaos**
+- **Cursor (VSCode fork)** работает под **Wayland sandbox**
+- **eBPF операции** требуют `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_RESOURCE`
+- **Wayland** блокирует `ptrace` и `bpf` syscalls
+- **Результат**: Cursor не может сохранять файлы при eBPF операциях
+
+## 3. **BTF Map Definition Conflicts**
+- **`.rodata` секция** с constant blinding ломает **BTF верификатор**
+- **Map flags** (`BPF_F_NO_PREALLOC`) не поддерживаются в старых ядрах
+- **Результат**: eBPF программа не загружается
+
+## 4. **NetworkManager Race Conditions**
+- **Manual `bpftool detach`** конфликтует с **NetworkManager**
+- **Interface recreation** оставляет интерфейс **un-programmed**
+- **Результат**: Нестабильная работа фаерволла
+
+---
+
+# 🛠️ Technical Solutions
+
+## **Phase 1: Network Stability Foundation**
+
+### 1.1 **Wi-Fi XDP Detection & Fallback**
+
+```bash
+#!/usr/bin/env bash
+# scripts/network-stability.sh
+set -euo pipefail
+
+# Detect interface type
+detect_interface_type() {
+    local iface="$1"
+    local driver=$(ethtool -i "$iface" 2>/dev/null | grep driver | cut -d: -f2 | tr -d ' ')
+    
+    case "$driver" in
+        ath9k_htc|iwlwifi|rtl8xxxu|brcmfmac|mt76*)
+            echo "wifi"
+            ;;
+        e1000e|igb|ixgbe|i40e|mlx4_en|mlx5_core)
+            echo "ethernet"
+            ;;
+        *)
+            echo "unknown"
+            ;;
+    esac
+}
+
+# Adaptive XDP/TC loading
+load_firewall_adaptive() {
+    local iface="$1"
+    local iface_type=$(detect_interface_type "$iface")
+    
+    echo "🔍 Interface $iface: $iface_type driver detected"
+    
+    if [[ "$iface_type" == "wifi" ]]; then
+        echo "⚠️  Wi-Fi detected - using TC-BPF fallback"
+        load_tc_firewall "$iface"
+    else
+        echo "✅ Ethernet detected - using XDP"
+        load_xdp_firewall "$iface"
+    fi
+}
+```
+
+### 1.2 **Emergency Network Recovery**
+
+```bash
+#!/usr/bin/env bash
+# scripts/panic.sh
+set -euo pipefail
+
+emergency_network_recovery() {
+    echo "🚨 EMERGENCY NETWORK RECOVERY STARTED"
+    
+    # 1. Kill all Cerberus processes
+    sudo pkill -f cerberus-v2 || true
+    sudo pkill -f xdp_filter || true
+    
+    # 2. Detach all XDP programs
+    for iface in $(ip link show | grep -E '^[0-9]+:' | cut -d: -f2 | tr -d ' '); do
+        sudo bpftool net detach xdp dev "$iface" 2>/dev/null || true
+    done
+    
+    # 3. Clean BPF maps
+    sudo rm -rf /sys/fs/bpf/cerberus* 2>/dev/null || true
+    
+    # 4. Reset network interfaces
+    for iface in $(nmcli device status | grep wifi | awk '{print $1}'); do
+        sudo nmcli device disconnect "$iface" 2>/dev/null || true
+        sudo nmcli device connect "$iface" 2>/dev/null || true
+    done
+    
+    # 5. Restart NetworkManager
+    sudo systemctl restart NetworkManager
+    sleep 5
+    
+    # 6. Verify connectivity
+    if ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+        echo "✅ Network recovered successfully"
+        return 0
+    else
+        echo "❌ Network recovery failed - REBOOT REQUIRED"
+        return 1
+    fi
+}
+```
+
+## **Phase 2: Cursor Permission Hardening**
+
+### 2.1 **Wayland + eBPF Compatibility**
+
+```bash
+#!/usr/bin/env bash
+# scripts/fix-cursor-permissions.sh
+set -euo pipefail
+
+fix_cursor_permissions() {
+    echo "🔧 Fixing Cursor permissions for eBPF development"
+    
+    # 1. Fix project directory permissions
+    sudo chown -R outspoken:outspoken /home/outspoken/Cerberus-V
+    sudo chmod -R 755 /home/outspoken/Cerberus-V
+    
+    # 2. Fix Cursor config directories
+    for dir in ~/.config/Cursor ~/.cache/Cursor ~/.local/share/Cursor; do
+        if [[ -d "$dir" ]]; then
+            sudo chown -R outspoken:outspoken "$dir"
+            sudo chmod -R 755 "$dir"
+        fi
+    done
+    
+    # 3. Remove immutable bits
+    sudo chattr -i /home/outspoken/Cerberus-V 2>/dev/null || true
+    
+    # 4. Clean temporary Cursor files
+    sudo rm -rf /tmp/.mount_Cursor* 2>/dev/null || true
+    
+    # 5. Set up eBPF capabilities for user
+    sudo setcap cap_bpf,cap_net_admin,cap_sys_resource=eip /usr/bin/bpftool
+    
+    echo "✅ Cursor permissions fixed"
+}
+```
+
+### 2.2 **Systemd User Service for eBPF**
+
+```ini
+# ~/.config/systemd/user/cerberus-ebpf.service
+[Unit]
+Description=Cerberus-V eBPF Firewall Loader
+After=graphical-session.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/outspoken/Cerberus-V/scripts/load_firewall_adaptive.sh
+ExecStop=/home/outspoken/Cerberus-V/scripts/panic.sh
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_SYS_RESOURCE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/sys/fs/bpf /proc /dev
+PrivateTmp=true
+PrivateDevices=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=default.target
+```
+
+## **Phase 3: BTF-Compliant eBPF Programs**
+
+### 3.1 **Hardened XDP Program**
+
+```c
+// ebpf/xdp_filter_hardened.c
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_endian.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
+#include <linux/icmp.h>
+#include <linux/in.h>
+
+// BTF-compliant maps (no BPF_F_NO_PREALLOC)
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 1 << 16);
+} events SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 10000);
+    __type(key, __u32);   // source IP
+    __type(value, __u64); // timestamp
+} rate_limit SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32);   // destination IP
+    __type(value, __u8);  // action (0=drop, 1=allow)
+} rules SEC(".maps");
+
+// Event structure
+struct event {
+    __u32 src_ip;
+    __u32 dst_ip;
+    __u16 src_port;
+    __u16 dst_port;
+    __u8 protocol;
+    __u8 action;
+    __u64 timestamp;
+};
+
+SEC("xdp")
+int xdp_firewall(struct xdp_md *ctx) {
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(long)ctx->data;
+    
+    // Basic packet validation
+    if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) > data_end)
+        return XDP_PASS;
+    
+    struct ethhdr *eth = data;
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
+        return XDP_PASS;
+    
+    struct iphdr *iph = data + sizeof(*eth);
+    if (data + sizeof(*eth) + sizeof(*iph) > data_end)
+        return XDP_PASS;
+    
+    if (iph->version != 4)
+        return XDP_PASS;
+    
+    __u32 src_ip = iph->saddr;
+    __u32 dst_ip = iph->daddr;
+    __u64 now = bpf_ktime_get_ns();
+    
+    // Rate limiting
+    __u64 *last_seen = bpf_map_lookup_elem(&rate_limit, &src_ip);
+    if (last_seen) {
+        if (now - *last_seen < 1000000000ULL) { // 1 second
+            return XDP_DROP;
+        }
+    }
+    bpf_map_update_elem(&rate_limit, &src_ip, &now, BPF_ANY);
+    
+    // Rule lookup
+    __u8 *action = bpf_map_lookup_elem(&rules, &dst_ip);
+    if (action && *action == 0) {
+        return XDP_DROP;
+    }
+    
+    // Scan detection
+    if (iph->protocol == IPPROTO_TCP) {
+        if (data + sizeof(*eth) + (iph->ihl << 2) + sizeof(struct tcphdr) > data_end)
+            return XDP_PASS;
+            
+        struct tcphdr *tcp = data + sizeof(*eth) + (iph->ihl << 2);
+        
+        // SYN scan detection
+        if (tcp->syn && !tcp->ack) {
+            struct event *evt = bpf_ringbuf_reserve(&events, sizeof(*evt), 0);
+            if (evt) {
+                evt->src_ip = src_ip;
+                evt->dst_ip = dst_ip;
+                evt->src_port = bpf_ntohs(tcp->source);
+                evt->dst_port = bpf_ntohs(tcp->dest);
+                evt->protocol = IPPROTO_TCP;
+                evt->action = 0;
+                evt->timestamp = now;
+                bpf_ringbuf_submit(evt, 0);
+            }
+            return XDP_DROP;
+        }
+    }
+    
+    return XDP_PASS;
+}
+
+char _license[] SEC("license") = "GPL";
+```
+
+### 3.2 **TC-BPF Fallback for Wi-Fi**
+
+```c
+// ebpf/tc_firewall.c
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_endian.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
+#include <linux/icmp.h>
+#include <linux/in.h>
+
+// Same maps as XDP
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 1 << 16);
+} events SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 10000);
+    __type(key, __u32);
+    __type(value, __u64);
+} rate_limit SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32);
+    __type(value, __u8);
+} rules SEC(".maps");
+
+struct event {
+    __u32 src_ip;
+    __u32 dst_ip;
+    __u16 src_port;
+    __u16 dst_port;
+    __u8 protocol;
+    __u8 action;
+    __u64 timestamp;
+};
+
+SEC("tc")
+int tc_firewall(struct __sk_buff *skb) {
+    void *data_end = (void *)(long)skb->data_end;
+    void *data = (void *)(long)skb->data;
+    
+    // Same logic as XDP but for TC
+    if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) > data_end)
+        return TC_ACT_OK;
+    
+    struct ethhdr *eth = data;
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
+        return TC_ACT_OK;
+    
+    struct iphdr *iph = data + sizeof(*eth);
+    if (data + sizeof(*eth) + sizeof(*iph) > data_end)
+        return TC_ACT_OK;
+    
+    if (iph->version != 4)
+        return TC_ACT_OK;
+    
+    __u32 src_ip = iph->saddr;
+    __u32 dst_ip = iph->daddr;
+    __u64 now = bpf_ktime_get_ns();
+    
+    // Rate limiting
+    __u64 *last_seen = bpf_map_lookup_elem(&rate_limit, &src_ip);
+    if (last_seen) {
+        if (now - *last_seen < 1000000000ULL) {
+            return TC_ACT_SHOT;
+        }
+    }
+    bpf_map_update_elem(&rate_limit, &src_ip, &now, BPF_ANY);
+    
+    // Rule lookup
+    __u8 *action = bpf_map_lookup_elem(&rules, &dst_ip);
+    if (action && *action == 0) {
+        return TC_ACT_SHOT;
+    }
+    
+    // Scan detection
+    if (iph->protocol == IPPROTO_TCP) {
+        if (data + sizeof(*eth) + (iph->ihl << 2) + sizeof(struct tcphdr) > data_end)
+            return TC_ACT_OK;
+            
+        struct tcphdr *tcp = data + sizeof(*eth) + (iph->ihl << 2);
+        
+        if (tcp->syn && !tcp->ack) {
+            struct event *evt = bpf_ringbuf_reserve(&events, sizeof(*evt), 0);
+            if (evt) {
+                evt->src_ip = src_ip;
+                evt->dst_ip = dst_ip;
+                evt->src_port = bpf_ntohs(tcp->source);
+                evt->dst_port = bpf_ntohs(tcp->dest);
+                evt->protocol = IPPROTO_TCP;
+                evt->action = 0;
+                evt->timestamp = now;
+                bpf_ringbuf_submit(evt, 0);
+            }
+            return TC_ACT_SHOT;
+        }
+    }
+    
+    return TC_ACT_OK;
+}
+
+char _license[] SEC("license") = "GPL";
+```
+
+## **Phase 4: NetworkManager Integration**
+
+### 4.1 **Dispatcher Script**
+
+```bash
+#!/bin/bash
+# /etc/NetworkManager/dispatcher.d/99-cerberus-xdp
+set -euo pipefail
+
+IFACE="$1"
+STATUS="$2"
+
+# Only handle our target interface
+[[ "$IFACE" != "wlp0s20f0u12" ]] && exit 0
+
+case "$STATUS" in
+    up|dhcp4-change|dhcp6-change)
+        echo "🔄 Network interface $IFACE is up - reloading Cerberus-V"
+        # Wait for interface to stabilize
+        sleep 2
+        # Reload firewall as user
+        sudo -u outspoken /home/outspoken/Cerberus-V/scripts/load_firewall_adaptive.sh "$IFACE" &
+        ;;
+    down)
+        echo "🔽 Network interface $IFACE is down - stopping Cerberus-V"
+        sudo -u outspoken /home/outspoken/Cerberus-V/scripts/panic.sh &
+        ;;
+esac
+```
+
+### 4.2 **Systemd Target Integration**
+
+```ini
+# /etc/systemd/system/cerberus.target
+[Unit]
+Description=Cerberus-V APT-Grade Firewall
+Wants=cerberus-ctrl.service cerberus-dataplane.service
+After=network-online.target
+Conflicts=firewalld.service
+
+[Install]
+WantedBy=multi-user.target
+```
+
+---
+
+# 🔍 Monitoring & Diagnostics
+
+## **Real-time Network Health**
+
+```bash
+#!/usr/bin/env bash
+# scripts/network-health.sh
+set -euo pipefail
+
+monitor_network_health() {
+    while true; do
+        # Check connectivity
+        if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+            echo "🚨 Network connectivity lost - triggering recovery"
+            /home/outspoken/Cerberus-V/scripts/panic.sh
+            sleep 10
+        fi
+        
+        # Check XDP/TC programs
+        if ! bpftool net show | grep -q "xdp\|tc"; then
+            echo "⚠️  No firewall programs attached - reloading"
+            /home/outspoken/Cerberus-V/scripts/load_firewall_adaptive.sh wlp0s20f0u12
+        fi
+        
+        # Check system resources
+        if [[ $(free -m | awk 'NR==2{printf "%.0f", $3*100/$2}') -gt 90 ]]; then
+            echo "🚨 High memory usage - cleaning up"
+            sudo sync && echo 3 | sudo tee /proc/sys/vm/drop_caches
+        fi
+        
+        sleep 30
+    done
+}
+```
+
+## **Performance Metrics**
+
+```bash
+#!/usr/bin/env bash
+# scripts/metrics.sh
+set -euo pipefail
+
+collect_metrics() {
+    echo "# HELP cerberus_packets_total Total packets processed"
+    echo "# TYPE cerberus_packets_total counter"
+    
+    # BPF map statistics
+    if [[ -f /sys/fs/bpf/cerberus/stats_map ]]; then
+        bpftool map dump pinned /sys/fs/bpf/cerberus/stats_map | \
+        jq -r '.[] | select(.value != null) | "cerberus_packets_total{type=\"\(.key)\"} \(.value)"'
+    fi
+    
+    echo "# HELP cerberus_drop_rate Drop rate percentage"
+    echo "# TYPE cerberus_drop_rate gauge"
+    
+    # Calculate drop rate
+    local total=$(bpftool map dump pinned /sys/fs/bpf/cerberus/stats_map 2>/dev/null | \
+                  jq -r '.[] | select(.key == 0) | .value // 0')
+    local drops=$(bpftool map dump pinned /sys/fs/bpf/cerberus/stats_map 2>/dev/null | \
+                  jq -r '.[] | select(.key == 1) | .value // 0')
+    
+    if [[ "$total" -gt 0 ]]; then
+        local rate=$(echo "scale=2; $drops * 100 / $total" | bc -l 2>/dev/null || echo "0")
+        echo "cerberus_drop_rate $rate"
+    else
+        echo "cerberus_drop_rate 0"
+    fi
+}
+```
+
+---
+
+# 🧪 Testing & Validation
+
+## **Automated Test Suite**
+
+```bash
+#!/usr/bin/env bash
+# tests/network-stability-test.sh
+set -euo pipefail
+
+test_network_stability() {
+    echo "🧪 Testing network stability..."
+    
+    # 1. Load firewall
+    ./scripts/load_firewall_adaptive.sh wlp0s20f0u12
+    
+    # 2. Test connectivity
+    for i in {1..10}; do
+        if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+            echo "❌ Connectivity test $i failed"
+            return 1
+        fi
+        sleep 1
+    done
+    
+    # 3. Test firewall functionality
+    if ! nmap -sS -p 22 127.0.0.1 >/dev/null 2>&1; then
+        echo "✅ Firewall blocking detected"
+    else
+        echo "⚠️  Firewall not blocking as expected"
+    fi
+    
+    # 4. Test recovery
+    ./scripts/panic.sh
+    sleep 5
+    
+    if ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+        echo "✅ Recovery test passed"
+    else
+        echo "❌ Recovery test failed"
+        return 1
+    fi
+    
+    echo "✅ All network stability tests passed"
+}
+```
+
+---
+
+# 📋 Deployment Checklist
+
+## **Pre-deployment**
+
+- [ ] **Kernel version** ≥ 6.8 (for constant blinding)
+- [ ] **libbpf-devel** installed
+- [ ] **bpftool** installed
+- [ ] **NetworkManager** configured
+- [ ] **SELinux** policies updated
+- [ ] **User capabilities** set
+
+## **Deployment**
+
+- [ ] **Emergency recovery script** tested
+- [ ] **Network dispatcher** installed
+- [ ] **Systemd services** enabled
+- [ ] **BPF maps** created
+- [ ] **Firewall programs** compiled
+- [ ] **Adaptive loading** tested
+
+## **Post-deployment**
+
+- [ ] **Connectivity** verified
+- [ ] **Firewall rules** loaded
+- [ ] **Performance** monitored
+- [ ] **Logs** checked
+- [ ] **Recovery** tested
+
+---
+
+# 🚨 Emergency Procedures
+
+## **Network Down**
+
+```bash
+# 1. Emergency recovery
+sudo /home/outspoken/Cerberus-V/scripts/panic.sh
+
+# 2. If still down, reboot
+sudo reboot
+```
+
+## **Cursor Can't Save**
+
+```bash
+# 1. Fix permissions
+sudo /home/outspoken/Cerberus-V/scripts/fix-cursor-permissions.sh
+
+# 2. Restart Cursor
+pkill -f cursor
+cursor &
+```
+
+## **eBPF Program Won't Load**
+
+```bash
+# 1. Check kernel headers
+sudo dnf install kernel-devel-$(uname -r)
+
+# 2. Check BTF
+bpftool feature probe
+
+# 3. Fallback to TC
+./scripts/load_firewall_adaptive.sh wlp0s20f0u12 tc
+```
+
+---
+
+# 📚 References
+
+- **XDP Driver Support**: https://github.com/xdp-project/xdp-project/blob/master/areas/netdev/driver-support.org
+- **BTF Documentation**: https://nakryiko.com/posts/btf-dedup/
+- **NetworkManager Dispatcher**: https://developer.gnome.org/NetworkManager/stable/NetworkManager.html
+- **eBPF Capabilities**: https://man7.org/linux/man-pages/man7/capabilities.7.html
+
+---
+
+**Elite APT-Grade Network Hardening Complete** 🛡️
+description:
+globs:
+alwaysApply: false
+---

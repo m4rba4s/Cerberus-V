@@ -1,0 +1,203 @@
+---
+alwaysApply: true
+---
+## 0. North Star
+
+- **Performance**: ≥100 Gbps sustained, ≤120 µs p99 latency (DPDK/VPP path); XDP generic safe‑mode for dev.
+- **Safety**: log‑apocalypse impossible; append‑only logs; immutable configs; hot‑reload without packet loss.
+- **Security**: Zero‑trust, minimal privileges, SELinux enforced, signed builds, supply‑chain integrity.
+- **UX**: Pro‑grade, minimalist, predictable. LIVE switch is latent‑safe (rate‑limited, rollbackable).
+
+---
+
+## 1. Текущее состояние (сделано)
+
+- Backend (FastAPI, :8000)
+  - WS heartbeat пушит `firewall.engine_status`, счётчики и `firewall.interface`.
+  - REST `/api/system/status` отдаёт `running`, `programs[]`, `stats`, `interface`.
+  - `/api/network/interfaces` — кросс‑Linux перечень iface через `ip -j`, даёт `recommended`.
+  - `/api/settings` — сохраняет конфиг в `config/cerberus.json`, применяет интерфейс менеджеру.
+  - Mock eBPF manager: load/unload программ, отражение интерфейса и статусов.
+
+- Frontend (Vite dev :3000)
+  - Settings: выпадашка интерфейсов с сервера, «Current: …» из WS/конфига, безопасные состояния.
+  - Dashboard: корректно показывает `engine_status` и активный интерфейс.
+  - WS‑контекст: мёрж состояний, периодический REST‑пуллинг.
+
+- Host safety / запись
+  - `scripts/install-logrotate.sh`: атомарная установка, SELinux, `prerotate` снимает +i/+a, `postrotate` возвращает +a, `copytruncate`, SARIF‑совместимые логи.
+  - `scripts/install-systemd-logsdir.sh`: fish‑safe drop‑ins `LogsDirectory=cerberus`.
+  - Идеологически: системные файлы правятся только скриптами (не IDE).
+
+---
+
+## 2. Архитектура (уровни)
+
+1) GUI (React/TS)
+   - Реалтайм статус (WS), формы настроек, импорт/экспорт правил, аналитика.
+2) Backend (FastAPI/Python)
+   - API/WS, префлайт, 2PC теневые карты, rollback, аудит, экспорт метрик.
+3) Control Plane (Go — каталог `ctrl/`)
+   - Экспортер Prometheus, интеграция/оркестрация VPP и eBPF, политики.
+4) Datapath
+   - eBPF/XDP: фильтрация, счётчики, ringbuffer, guardian‑kprobes.
+   - VPP: классификаторы/ACL, NUMA‑aware workers, AF_XDP/DPDK ingress.
+
+Данные: GUI → Backend (REST/WS) → Control Plane → eBPF/VPP. Телеметрия → Prometheus/Grafana; логи → /var/log/cerberus (append‑only).
+
+---
+
+## 3. План работ (инкрементами; KISS/DRY)
+
+### 3.1 CI/Статика (включить сразу)
+
+- Python: `black`, `flake8`, `mypy` (strict), `bandit`.
+- TypeScript: `eslint` (airbnb+ts), `tsc --noEmit`.
+- Go: `gofumpt`, `staticcheck`, `golangci-lint`.
+- C/eBPF: `clang-tidy 17`, `sparse`, `smatch`, `coccinelle`.
+- SARIF агрегация → Security таб. Все предупреждения = fail.
+
+Make targets (пример):
+```bash
+make verify     # все линтеры + unit
+make web-build  # npm ci && npm run build
+make go-test    # ctrl/ юнит‑тесты
+```
+
+### 3.2 eBPF/XDP (MVP → prod)
+
+- MVP
+  - Карты: LPM‑trie для IPv4/IPv6, per‑CPU счётчики, ringbuffer событий.
+  - Прога: `xdp_filter.c` — DROP/ALLOW с baseline‑правилом, метрики, TTL‑мифизация под флагом.
+  - Loader: userspace на libbpf, cookie в .rodata (constant‑blinding).
+  - API: `/api/ebpf/{load,unload,stats,programs}` (уже частично есть).
+- Prod
+  - Shadow‑map 2PC + atomic swap; rate‑limit apply; rollback на ошибке/панике.
+  - Watchdog: авто‑reattach при detach, k(ret)probe на критичные узлы.
+  - Набор тестов: verifier‑safe, clang‑tidy clean, perf‑bench с TREX.
+
+### 3.3 VPP Engine
+
+- Сборка плагина `plugins/ebpf_classify.c` + шаблон ACL node; включение в `startup.conf`.
+- Топология: ingress AF_XDP/DPDK → ebpf_classify → acl → tx.
+- NUMA/CPU pinning, RX/TX descriptors 4096, no‑multi‑seg.
+- REST: `/api/vpp/{start,stop,status}`; экспорт worker/counters в Prometheus.
+
+### 3.4 Backend (прочность интерфейсов)
+
+- Префлайт LIVE: проверки заполненности карт (watermarks), дубликаты rule‑id, базовый immutable‑rule.
+- Rollback/2PC: `/api/mode` (simulation/live) с dry‑run и diff.
+- Аудит: бинарный лог + zstd; экспорт JSON для UI.
+- SELinux: .te для bpf prog/map/attach и vpp; systemd sandbox (NoNewPrivileges, CapabilityBoundingSet, SystemCallFilter).
+
+### 3.5 GUI (гибкие настройки, без магии)
+
+- Settings:
+  - Network iface (из `/api/network/interfaces`), queue id, verbose, BPF maps лимиты, VPP workers/heap.
+  - Import/Export правил (JSON schema v1 + checksum). Предпросмотр diff перед apply.
+  - LIVE toggle: подтверждение «LIVE», dry‑run summary, rate‑limited apply.
+- Monitoring:
+  - Realtime counters: packets/bytes, drops, per‑cpu latency buckets.
+  - Логи: tail с фильтрами, скачивание архивов, индикатор tamper‑proof.
+- Analytics:
+  - Правила: hit‑count, top talkers, гео‑heatmap (позже), алерты.
+
+---
+
+## 4. Дефиниции готовности (DoD) по этапам
+
+- eBPF MVP: линтеры чисто; XDP generic attach на dev‑iface; unit‑тесты карт; REST/WS статусы корректны.
+- VPP MVP: плагин собран, стартует из systemd, счётчики в Prometheus, UI показывает workers/throughput.
+- LIVE switch: префлайт скрипт `scripts/live_preflight.sh` зелёный; rollback мгновенный; алерты в журнале.
+- CI: `make verify` зелёный; web build проходит; SARIF без предупреждений.
+
+---
+
+## 5. Проверки и верификация
+
+- Unit (py/go/ts/c): покрытие критичных модулей ≥80%.
+- Integration: GUI ↔ Backend контрактные тесты; eBPF attach/detach симулированный.
+- Perf: `tests/bench_trex.sh` P99 ≤120µs; отчёты сохраняются/сравниваются.
+- Security: `bandit`, `semgrep`, SCA зависимостей, SBOM, cosign verify.
+
+Команды:
+```bash
+pytest -q tests/integration
+go test ./ctrl -race -count=1
+npm ci && npm run build
+clang-tidy ebpf/*.c --config-file=.clang-tidy
+```
+
+---
+
+## 6. Риски и предохранители
+
+- XDP на Wi‑Fi/NM: dev‑режим только generic; запрет attach к wireless по умолчанию.
+- Ringbuffer flood: лимиты карт + экспортер счётчиков; алерт при >90% заполнения.
+- Log‑apocalypse: append‑only + copytruncate + ротация; дисковые квоты и алерты.
+- Human error: immutable baseline rule; двухфазный коммит; rate‑limit операций.
+
+---
+
+## 7. Конвенции и правила PR
+
+- ≤150 LOC на PR, иначе дробить; «минимальное изменение → максимальная проверка».
+- Все новые логи — правило в `/etc/logrotate.d/cerberus` через инсталлер.
+- Любая новая карта/attach — обновление SELinux `.te` и systemd drop‑ins при необходимости.
+- Feature‑флаги через `APT_EXPERIMENT=1`.
+
+---
+
+## 8. Что доработать (список задач)
+
+- [ ] Исправить Vite HMR warning по `WebSocketContext` экспорту (консистентные exports).
+- [ ] Завести eslint/prettier конфиги, включить в CI; tsc noEmit.
+- [ ] Юнит‑тесты для `/api/network/interfaces` (моки `ip -j`).
+- [ ] Реальный eBPF loader с libbpf‑скелетом; счётчики per‑cpu в Prometheus.
+- [ ] VPP плагин: ebpf_classify → acl; статусы в UI.
+- [ ] Импорт/экспорт правил; JSON Schema + checksum; оффлайн‑валидация.
+- [ ] LIVE preflight: watermarks карт, дубли rule‑id, baseline неизменяем.
+- [ ] Watchdog auto‑reattach XDP/VPP; emergency revert.
+- [ ] E2E smoke (Playwright) на GUI: login → toggle LIVE → проверка метрик.
+
+---
+
+## 9. Шедевр циничного фаерволла (как должно выглядеть)
+
+- Минимализм кода, максимальная наблюдаемость. Любое действие — лог и метрика.
+- Любой «рубильник» — обратимый и rate‑limited. Никаких «одна кнопка — вся сеть упала».
+- UI: быстрое редактирование правил с предсказуемым diff и откатом; понятные tooltips; без «магии».
+- Datapath: eBPF для «быстрого ножа», VPP для сложного конвейера; горячая замена без остановки.
+- Безопасность не как опция, а как контракт: SELinux, sandbox, supply‑chain, подписанные артефакты.
+
+---
+
+## 10. Быстрый старт (оператор)
+
+```bash
+# dev
+./gui/start-backend.sh &  # или venv uvicorn main:app
+./gui/start-frontend-dev.sh &
+
+# системная подготовка
+sudo scripts/install-logrotate.sh
+sudo scripts/install-systemd-logsdir.sh
+
+# проверка
+curl -s localhost:8000/api/system/status | jq .
+```
+
+---
+
+## 11. Ссылки в проекте
+
+- `gui/backend/main.py` — API/WS
+- `gui/frontend/src/pages/Settings.tsx` — интерфейсы/настройки
+- `vpp/plugins/*.c` — плагины VPP
+- `ebpf/xdp_filter.c` — datapath (расширять)
+- `ctrl/*.go` — экспорт/интеграция
+
+---
+
+> «Never push to LIVE on Fridays. Если всё же пришлось — держи пейджер включённым.»
+

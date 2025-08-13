@@ -1,0 +1,30 @@
+[Unit]
+Description=Cerberus-V Network Health Monitor
+Documentation=https://github.com/m4rba4s/Cerberus-V
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=outspoken
+Group=outspoken
+ExecStart=/usr/bin/bash /home/outspoken/Cerberus-V/scripts/network-health.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cerberus-network-health
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log /home/outspoken/Cerberus-V /tmp
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

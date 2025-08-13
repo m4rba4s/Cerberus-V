@@ -3,7 +3,7 @@
 
 import React from 'react';
 import { Card, CardContent, Typography, Box, LinearProgress } from '@mui/material';
-import { Computer, Memory, Speed } from '@mui/icons-material';
+import { Computer } from '@mui/icons-material';
 
 interface SystemInfo {
   hostname: string;
@@ -16,7 +16,6 @@ interface SystemInfo {
 
 interface SystemInfoCardProps {
   systemInfo: SystemInfo | null;
-  stats?: any;
 }
 
 const formatBytes = (bytes: number): string => {
@@ -27,7 +26,7 @@ const formatBytes = (bytes: number): string => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-const SystemInfoCard: React.FC<SystemInfoCardProps> = ({ systemInfo, stats }) => {
+const SystemInfoCard: React.FC<SystemInfoCardProps> = ({ systemInfo }) => {
   if (!systemInfo) {
     return (
       <Card>

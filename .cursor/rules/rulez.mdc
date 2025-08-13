@@ -1,0 +1,330 @@
+---
+alwaysApply: true
+---
+```markdown
+---
+file: .cursor/mdc.md
+title:  "Cerberus-V Elite-Hardening & Completion Playbook"
+author: "APT-Grade Red-Team/Blue-Team Hybrid Engineer"
+version: "∞"
+danger:  "Assume every byte is hostile"
+---
+
+# ⚔️ Mission Brief
+> Finish Cerberus-V to **APT-resilient**, **100 Gbps sustained**, **≤120 µs latency**, **Fedora-42** host after **log-apocalypse recovery**.  
+> Treat every step as if a nation-state is already inside the build pipeline.
+
+---
+
+## 0. Threat Model (Pre-flight)
+
+| Asset | Adversary Goal | Attack Surface | Mitigation |
+|---|---|---|---|
+| eBPF ELF | Map tamper, kprobe hook | Kernel BTF, iproute2 | Reproducible builds + signed ELF |
+| VPP shared-mem | Heap spray, UAF | Hugepage shm | ASLR, RELRO, seccomp |
+| gRPC API | Auth bypass, rule injection | TLS, JWT | mTLS, Ed25519, 15-min TTL |
+| CI runner | Supply-chain | GH Actions | SLSA-3, OIDC, cosign |
+| Logs | Denial-of-Service | /var/log | zstd + logrotate + chattr+i |
+
+---
+
+## 1. Host Recovery (Post “log-apocalypse”)
+
+```bash
+#!/usr/bin/env bash
+# 1.1 Immutable /var/log
+sudo mount -o remount,ro /var/log || true
+sudo chattr +i /var/log/audit/audit.log
+
+# 1.2 Nuke stale bpf maps
+sudo bpftool map show | awk '/cerberus/ {print $1}' | xargs -I{} sudo bpftool map pin {} /sys/fs/bpf/cerberus_reset
+
+# 1.3 Reclaim hugepages
+echo 0 | sudo tee /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+echo 2048 | sudo tee /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+```
+
+---
+
+## 2. Reproducible Builds (Zero-Trust Toolchain)
+
+### 2.1 Containerized hermetic build
+```dockerfile
+# Dockerfile.build
+FROM fedora:42@sha256:deadbeef...   # pin digest
+RUN dnf install -y \
+    clang-18.1.0-1.fc42 \
+    llvm-18.1.0-1.fc42 \
+    libbpf-devel-1.4.0-1.fc42 \
+    vpp-devel-24.02-1.fc42 \
+    && dnf clean all
+ENV SOURCE_DATE_EPOCH=1719264000
+```
+
+```bash
+docker build -f Dockerfile.build -t cerberus-builder .
+docker run --rm -v $PWD:/src -w /src cerberus-builder make -C ebpf/ V=1
+```
+
+### 2.2 Signed ELF
+```bash
+sbctl sign --key /etc/secureboot/keys/db.key --cert /etc/secureboot/keys/db.crt ebpf/bin/xdp_filter.o
+```
+
+---
+
+## 3. eBPF Layer – Surgical Precision
+
+### 3.1 Map Hardening (no `BPF_F_NO_PREALLOC`)
+```c
+// ebpf/xdp_filter.c
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __uint(map_flags, BPF_F_NO_PREALLOC | BPF_F_RDONLY_PROG);
+    __uint(max_entries, 1<<20);
+    __type(key, struct bpf_lpm_trie_key_u32);
+    __type(value, __u8); /* 0=drop, 1=pass */
+} blackhole SEC(".maps");
+```
+
+### 3.2 Constant-blinding (anti-spectre)
+```c
+/* Use randomized cookie per load */
+const volatile __u32 secret_cookie = 0; /* set via .rodata */
+...
+if (iph->daddr ^ secret_cookie) { ... }
+```
+```bash
+# loader injects cookie
+bpftool gen skeleton xdp_filter.o \
+  | sed "s/secret_cookie = 0/secret_cookie = $(openssl rand -hex 4)/" \
+  > xdp_filter.skel.h
+```
+
+---
+
+## 4. VPP Layer – NUMA-Aware, Zero-Copy
+
+### 4.1 Node pinning (systemd slice)
+```ini
+# /etc/systemd/system/cerberus-vpp.service
+[Unit]
+Description=Cerberus-VPP datapath
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vpp -c /etc/vpp/startup.conf
+CPUAffinity=2-7
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+```
+
+### 4.2 Startup.conf tuned
+```c
+unix {
+  nodaemon
+  log /var/log/vpp/cerberus.log
+  cli-listen /run/vpp/cli.sock
+}
+dpdk {
+  dev 0000:19:00.0 {
+    num-rx-queues 4
+    num-tx-queues 4
+    num-rx-desc 4096
+    num-tx-desc 4096
+  }
+  no-multi-seg
+  no-tx-checksum-offload
+}
+cpu {
+  main-core 1
+  corelist-workers 2-7
+}
+plugins {
+  plugin cerberus_acl_plugin.so { enable }
+}
+```
+
+---
+
+## 5. Control Plane – gRPC & REST
+
+### 5.1 mTLS & Ed25519
+```go
+// userspace/cmd/cerberusd/main.go
+creds, _ := credentials.NewServerTLSFromFile(
+    "/etc/cerberus/tls/server.pem",
+    "/etc/cerberus/tls/server.key",
+)
+s := grpc.NewServer(
+    grpc.Creds(creds),
+    grpc.UnaryInterceptor(grpc_auth.UnaryServerInterceptor(authFunc)),
+)
+```
+
+### 5.2 Rule validation regex (ReDoS-proof)
+```go
+var (
+    ipv4RE = regexp.MustCompile(`^(?:(?:25[0-5]|2[0-4]\d|1?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|1?\d\d?)(?:/\d{1,2})?$`)
+    geoRE  = regexp.MustCompile(`^[A-Z]{2}(?:,[A-Z]{2}){0,9}$`)
+)
+```
+
+### 5.3 JWT 15-min TTL
+```go
+claims := &jwt.RegisteredClaims{
+    ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
+    Issuer:    "cerberus-v",
+}
+```
+
+---
+
+## 6. Observability – Tamper-Proof Logs
+
+### 6.1 Binary log format (zstd)
+```go
+// userspace/internal/logger/logger.go
+type Entry struct {
+    UnixNano int64
+    Severity byte
+    RuleID   uint64
+    MsgLen   uint16
+    Msg      [256]byte
+}
+
+func WriteZstd(w *zstd.Encoder, e *Entry) {
+    _ = binary.Write(w, binary.LittleEndian, e)
+}
+```
+
+### 6.2 logrotate + chattr
+```bash
+/var/log/cerberus/*.log {
+    daily
+    rotate 7
+    compress
+    postrotate
+        chattr +i /var/log/cerberus/current.log
+    endscript
+}
+```
+
+---
+
+## 7. CI/CD – SLSA-3 Supply Chain
+
+### 7.1 GitHub Actions (excerpt)
+```yaml
+- uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+  with:
+    base64-subjects: "${{ needs.build.outputs.hashes }}"
+    provenance-name: "cerberus-v.intoto.jsonl"
+- uses: sigstore/cosign-installer@v3
+- run: cosign sign --yes ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+```
+
+### 7.2 Rebuild guard
+```bash
+# scripts/verify-provenance.sh
+cosign verify \
+  --certificate-identity-regexp 'https://github\.com/m4rba4s/Cerberus-V' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  ghcr.io/m4rba4s/cerberus-v:latest
+```
+
+---
+
+## 8. Runtime Security – seccomp + landlock
+
+### 8.1 seccomp profile
+```json
+{
+  "defaultAction": "SCMP_ACT_KILL",
+  "architectures": ["SCMP_ARCH_X86_64"],
+  "syscalls": [
+    {"names": ["read", "write", "close", "exit"], "action": "SCMP_ACT_ALLOW"}
+  ]
+}
+```
+
+### 8.2 Landlock LSM
+```c
+int abi = landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+struct landlock_path_beneath_attr pb = {
+    .allowed_access = LANDLOCK_ACCESS_FS_READ,
+};
+landlock_add_rule(ruleset, LANDLOCK_RULE_PATH_BENEATH, &pb, 0);
+prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+landlock_restrict_self(ruleset, 0);
+```
+
+---
+
+## 9. Performance Benchmark Harness
+
+```bash
+#!/usr/bin/env bash
+# tests/perf_regression.sh
+set -euo pipefail
+CPU=7 taskset -c $CPU ./tests/trex_test.py \
+  --rate 100Gbps \
+  --duration 300s \
+  --warmup 30s \
+  --lat-histogram lat.csv \
+  --fail-if-p99-gt 120us
+```
+
+---
+
+## 10. Emergency Wipe
+
+```bash
+#!/usr/bin/env bash
+# scripts/panic.sh
+sudo bpftool map show | awk '/cerberus/ {system("sudo bpftool map delete "$1)}'
+sudo systemctl stop cerberus-vpp
+sudo shred -n 3 -z /var/lib/vpp/*
+reboot -f
+```
+
+---
+
+## 11. Cursor Rules (`.cursor/settings.json`)
+```jsonc
+{
+  "editor.formatOnSave": true,
+  "python.defaultInterpreterPath": "./venv/bin/python",
+  "python.linting.enabled": true,
+  "python.linting.flake8Enabled": true,
+  "python.formatting.provider": "black",
+  "go.formatTool": "gofumpt",
+  "cSpell.words": ["ebpf", "libbpf", "vpp", "NUMA", "AF_XDP"],
+  "files.associations": {
+    "*.c": "c",
+    "*.h": "c",
+    "*.go": "go"
+  },
+  "git.ignoreLimitWarning": true
+}
+```
+
+---
+
+## 12. Final Checklist (commit gate)
+
+- [ ] `make verify` passes (tests, lint, seccomp, landlock)  
+- [ ] `cosign verify` passes  
+- [ ] `bench-regression` < 120 µs P99  
+- [ ] `scripts/panic.sh` executes in < 3 s  
+- [ ] Entropy cookie rotated per build  
+- [ ] README badge green
+
+---
+
+> “Never trust, always verify, then verify the verifier.”  
+> — Elite-Mode OFF
+```

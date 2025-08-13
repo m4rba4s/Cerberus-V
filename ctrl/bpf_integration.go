@@ -6,10 +6,11 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
-	"syscall"
-	"unsafe"
+	"strconv"
+	"strings"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -72,10 +73,16 @@ func (bm *BPFManager) AttachXDP(interfaceName string) error {
 		return fmt.Errorf("no XDP program loaded")
 	}
 
+	// Get interface index
+	iface, err := net.InterfaceByName(interfaceName)
+	if err != nil {
+		return fmt.Errorf("failed to get interface %s: %v", interfaceName, err)
+	}
+
 	// Attach to interface
 	l, err := link.AttachXDP(link.XDPOptions{
 		Program:   bm.program,
-		Interface: interfaceName,
+		Interface: iface.Index,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to attach XDP program: %v", err)
@@ -108,12 +115,12 @@ func (bm *BPFManager) UpdateFirewallRules(rules []FirewallRule) error {
 	for i, rule := range rules {
 		key := uint32(i)
 		bpfRule := BPFFirewallRule{
-			SrcIP:    rule.SourceIP,
-			DstIP:    rule.DestIP,
-			SrcPort:  rule.SourcePort,
-			DstPort:  rule.DestPort,
-			Protocol: rule.Protocol,
-			Action:   rule.Action,
+			SrcIP:    ipToUint32(rule.SrcIP),
+			DstIP:    ipToUint32(rule.DstIP),
+			SrcPort:  uint16(rule.SrcPort),
+			DstPort:  uint16(rule.DstPort),
+			Protocol: protocolToUint8(rule.Protocol),
+			Action:   actionToUint8(rule.Action),
 		}
 
 		err := firewallMap.Put(&key, &bpfRule)
@@ -181,8 +188,43 @@ type BPFStatistics struct {
 
 // Helper function to convert IP string to uint32
 func ipToUint32(ip string) uint32 {
-	// Simple conversion - in production use proper IP parsing
-	return 0
+	parts := strings.Split(ip, ".")
+	if len(parts) != 4 {
+		return 0
+	}
+	
+	var result uint32
+	for i, part := range parts {
+		val, _ := strconv.ParseUint(part, 10, 8)
+		result |= uint32(val) << ((3 - i) * 8)
+	}
+	return result
+}
+
+func protocolToUint8(protocol string) uint8 {
+	switch strings.ToLower(protocol) {
+	case "tcp":
+		return 6
+	case "udp":
+		return 17
+	case "icmp":
+		return 1
+	default:
+		return 0 // any
+	}
+}
+
+func actionToUint8(action string) uint8 {
+	switch strings.ToLower(action) {
+	case "allow":
+		return 1
+	case "drop":
+		return 0
+	case "redirect":
+		return 2
+	default:
+		return 0 // drop
+	}
 }
 
 // Pin BPF maps to filesystem

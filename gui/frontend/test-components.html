@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cerberus-V Component Test</title>
+    <style>
+        body {
+            font-family: 'JetBrains Mono', monospace;
+            background: #1a1a1a;
+            color: #ffffff;
+            margin: 0;
+            padding: 20px;
+        }
+        .test-section {
+            background: #2a2b2e;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            border: 1px solid #3a3b3e;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 16px;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .status-live {
+            background: #00ff00;
+            color: #000;
+        }
+        .status-simulation {
+            background: #00bfff;
+            color: #fff;
+        }
+        .button {
+            background: #00bfff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .button:hover {
+            background: #0099cc;
+        }
+        .rule-item {
+            background: #3a3b3e;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 4px;
+            border-left: 4px solid #00bfff;
+        }
+        .rule-name {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .rule-desc {
+            color: #cccccc;
+            font-size: 14px;
+        }
+        .rule-chips {
+            margin-top: 10px;
+        }
+        .chip {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            margin-right: 5px;
+        }
+        .chip-allow {
+            background: #00ff00;
+            color: #000;
+        }
+        .chip-deny {
+            background: #ff0000;
+            color: #fff;
+        }
+        .chip-tcp {
+            background: #00bfff;
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔒 Cerberus-V Component Test</h1>
+    
+    <div class="test-section">
+        <h2>Mode Context Test</h2>
+        <p>Current Mode: <span class="status-badge status-simulation">SIMULATION</span></p>
+        <button class="button" onclick="toggleMode()">Toggle Mode</button>
+        <p id="mode-status">Mode: SIMULATION</p>
+    </div>
+
+    <div class="test-section">
+        <h2>VPP Engine Status</h2>
+        <p>Status: <span class="status-badge status-live">RUNNING</span></p>
+        <p>Protection Mode: <span class="status-badge status-simulation">SIMULATION</span></p>
+        <p>Worker Threads: 4</p>
+        <p>Version: VPP v24.02 (simulation)</p>
+    </div>
+
+    <div class="test-section">
+        <h2>Firewall Rules Test</h2>
+        <button class="button" onclick="addTestRule()">Add Test Rule</button>
+        <div id="rules-container">
+            <div class="rule-item">
+                <div class="rule-name">Block Malicious IPs</div>
+                <div class="rule-desc">Block known malicious IP addresses</div>
+                <div class="rule-chips">
+                    <span class="chip chip-deny">deny</span>
+                    <span class="chip chip-tcp">any</span>
+                </div>
+            </div>
+            <div class="rule-item">
+                <div class="rule-name">Allow SSH</div>
+                <div class="rule-desc">Allow SSH access from management network</div>
+                <div class="rule-chips">
+                    <span class="chip chip-allow">allow</span>
+                    <span class="chip chip-tcp">tcp</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>Network Status Test</h2>
+        <p>Active Connections: 1,247</p>
+        <p>Blocked Attempts: 89</p>
+        <p>Traffic Rate: 2.4 Gbps</p>
+        <p>Latency: 45 μs</p>
+    </div>
+
+    <script>
+        let currentMode = 'simulation';
+        
+        function toggleMode() {
+            currentMode = currentMode === 'simulation' ? 'live' : 'simulation';
+            document.getElementById('mode-status').textContent = `Mode: ${currentMode.toUpperCase()}`;
+            
+            // Update all status badges
+            const badges = document.querySelectorAll('.status-badge');
+            badges.forEach(badge => {
+                if (badge.textContent.includes('SIMULATION') || badge.textContent.includes('LIVE')) {
+                    badge.textContent = currentMode.toUpperCase();
+                    badge.className = `status-badge status-${currentMode}`;
+                }
+            });
+        }
+        
+        function addTestRule() {
+            const container = document.getElementById('rules-container');
+            const newRule = document.createElement('div');
+            newRule.className = 'rule-item';
+            newRule.innerHTML = `
+                <div class="rule-name">Custom Rule ${Date.now()}</div>
+                <div class="rule-desc">Test rule added via button</div>
+                <div class="rule-chips">
+                    <span class="chip chip-allow">allow</span>
+                    <span class="chip chip-tcp">tcp</span>
+                </div>
+            `;
+            container.appendChild(newRule);
+        }
+    </script>
+</body>
+</html> 

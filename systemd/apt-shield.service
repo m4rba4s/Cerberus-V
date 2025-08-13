@@ -1,0 +1,58 @@
+[Unit]
+Description=APT-Shield Anti-Reconnaissance Defense Service
+Documentation=https://github.com/m4rba4s/Cerberus-V
+After=network-online.target
+Wants=network-online.target
+PartOf=cerberus.target
+Conflicts=firewalld.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/home/outspoken/Cerberus-V
+ExecStartPre=/home/outspoken/Cerberus-V/scripts/apt-shield-preflight.sh
+ExecStart=/home/outspoken/Cerberus-V/userspace/rb_to_syslog
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=3
+TimeoutStartSec=30
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=apt-shield
+
+# Resource limits (защита от OOM)
+LimitNOFILE=65536
+LimitNPROC=1024
+MemoryMax=512M
+CPUQuota=50%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/sys/fs/bpf /var/log /proc
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# Capabilities (минимальные права)
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_BPF
+AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_BPF
+
+# Watchdog
+WatchdogSec=30
+
+[Install]
+WantedBy=multi-user.target 

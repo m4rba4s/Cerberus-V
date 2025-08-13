@@ -31,40 +31,24 @@ import {
   Tab,
   Fab,
   Checkbox,
-  Menu,
-  ListItemIcon,
-  ListItemText,
-  Divider,
   Alert,
   Snackbar,
   Tooltip,
   Card,
-  CardContent,
-  CardActions,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails
+  CardContent
 } from '@mui/material';
 import {
   Add as AddIcon,
   Edit as EditIcon,
   Delete as DeleteIcon,
-  MoreVert as MoreVertIcon,
   Security as SecurityIcon,
   NetworkCheck as NetworkIcon,
   Policy as PolicyIcon,
   Download as DownloadIcon,
   Upload as UploadIcon,
-  FilterList as FilterIcon,
   Search as SearchIcon,
   PlayArrow as EnableIcon,
-  Pause as DisableIcon,
-  ContentCopy as CopyIcon,
-  ExpandMore as ExpandMoreIcon,
-  Visibility as ViewIcon,
-  VisibilityOff as HideIcon,
-  Star as StarIcon,
-  Label as TagIcon
+  Pause as DisableIcon
 } from '@mui/icons-material';
 import { useWebSocket } from '../contexts/WebSocketContext';
 
@@ -118,7 +102,7 @@ function TabPanel(props: TabPanelProps) {
 }
 
 const Configuration: React.FC = () => {
-  const { data, isConnected } = useWebSocket();
+  useWebSocket();
   
   // State management
   const [currentTab, setCurrentTab] = useState(0);
@@ -132,13 +116,9 @@ const Configuration: React.FC = () => {
   
   // Dialog states
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
-  const [objectDialogOpen, setObjectDialogOpen] = useState(false);
+  // const [objectDialogOpen, setObjectDialogOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<FirewallRule | null>(null);
-  const [editingObject, setEditingObject] = useState<NetworkObject | null>(null);
-  
-  // Menu states
-  const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
-  const [selectedRuleId, setSelectedRuleId] = useState<string>('');
+  // const [editingObject, setEditingObject] = useState<NetworkObject | null>(null);
   
   // Notification state
   const [notification, setNotification] = useState<{open: boolean, message: string, severity: 'success' | 'error' | 'warning' | 'info'}>({
@@ -164,13 +144,13 @@ const Configuration: React.FC = () => {
   });
   
   // Form state for network objects
-  const [objectForm, setObjectForm] = useState<Partial<NetworkObject>>({
-    name: '',
-    type: 'host',
-    value: '',
-    description: '',
-    tags: []
-  });
+  // const [objectForm, setObjectForm] = useState<Partial<NetworkObject>>({
+  //   name: '',
+  //   type: 'host',
+  //   value: '',
+  //   description: '',
+  //   tags: []
+  // });
 
   // Load data on component mount
   useEffect(() => {
@@ -183,7 +163,8 @@ const Configuration: React.FC = () => {
       const response = await fetch('/api/firewall/rules');
       if (response.ok) {
         const data = await response.json();
-        setRules(data);
+        // Backend returns { rules: [...] }
+        setRules(Array.isArray(data) ? (data as unknown as FirewallRule[]) : (data?.rules ?? []));
       }
     } catch (error) {
       console.error('Error loading firewall rules:', error);

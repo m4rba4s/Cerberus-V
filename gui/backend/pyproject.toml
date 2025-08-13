@@ -1,0 +1,14 @@
+[tool.black]
+line-length = 100
+target-version = ["py313"]
+exclude = '''
+/(\n  \\.(git|hg|svn)\n  | \\.venv\n  | venv\n  | build\n  | dist\n  | .*site-packages.*\n)/\n'''
+
+[tool.mypy]
+python_version = "3.13"
+warn_unused_configs = true
+ignore_missing_imports = true
+plugins = []
+exclude = "(venv|\\.venv|.*site-packages.*)"
+
+

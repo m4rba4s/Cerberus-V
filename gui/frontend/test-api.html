@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Test</title>
+</head>
+<body>
+    <h1>API Connection Test</h1>
+    <div id="results"></div>
+    
+    <script>
+        const API_BASE_URL = 'http://localhost:8000';
+        
+        async function testAPI() {
+            const results = document.getElementById('results');
+            
+            try {
+                // Test 1: Health endpoint
+                console.log('Testing health endpoint...');
+                const healthResponse = await fetch(`${API_BASE_URL}/api/health`);
+                const healthData = await healthResponse.json();
+                results.innerHTML += `<p>✅ Health: ${JSON.stringify(healthData)}</p>`;
+                
+                // Test 2: Mode endpoint
+                console.log('Testing mode endpoint...');
+                const modeResponse = await fetch(`${API_BASE_URL}/api/mode`);
+                const modeData = await modeResponse.json();
+                results.innerHTML += `<p>✅ Mode: ${JSON.stringify(modeData)}</p>`;
+                
+                // Test 3: Rules endpoint
+                console.log('Testing rules endpoint...');
+                const rulesResponse = await fetch(`${API_BASE_URL}/api/rules`);
+                const rulesData = await rulesResponse.json();
+                results.innerHTML += `<p>✅ Rules: ${JSON.stringify(rulesData)}</p>`;
+                
+            } catch (error) {
+                console.error('API test failed:', error);
+                results.innerHTML += `<p>❌ Error: ${error.message}</p>`;
+            }
+        }
+        
+        // Run test when page loads
+        testAPI();
+    </script>
+</body>
+</html> 
