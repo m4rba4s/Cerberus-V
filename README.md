@@ -52,19 +52,6 @@ sudo ./cerberus-v2 eth0
 nmap -sS localhost  # SYN scan
 ping localhost      # ICMP scan
 
-🏗️ Architecture
-
-┌─────────────────┐    ┌─────────────────┐     ┌─────────────────┐
-│   Network       │    │   eBPF XDP      │     │   Userspace     │
-│   Interface     │───▶│   Program      │───▶|   Control       │
-│                 │    │                 │     │   Plane         │
-└─────────────────┘    └─────────────────┘     └─────────────────┘
-                              │
-                              ▼
-                       ┌─────────────────┐
-                       │   Ring Buffer   │
-                       │   (Zero-copy)   │
-                       └─────────────────┘
 
 🔧 Build
 
