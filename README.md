@@ -1,4 +1,4 @@
-Cerberus-V2: Elite Firewall
+# Cerberus-V2: Elite Firewall
 
 Single file. Maximum efficiency. Zero bloat.
 
@@ -26,7 +26,7 @@ Lock-free – fully lock-free data structures
 
 🚀 Quick Start
 
-# Build
+- Build
 make
 
 # Run (auto-detects network interface)
