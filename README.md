@@ -1,4 +1,4 @@
-Cerberus-V2: Elite APT-Grade Firewall
+Cerberus-V2: Elite Firewall
 
 Single file. Maximum efficiency. Zero bloat.
 
